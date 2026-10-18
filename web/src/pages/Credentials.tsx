@@ -4,6 +4,8 @@ import { OAuth } from "../OAuth";
 import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
 import { Buddy, buddyConfirmation } from "../Buddy";
+import { BalanceExpiry, CreditsPanel } from "../CreditsPanel";
+import { dateLabel, tokenExpiry } from "../credits";
 import {
   api,
   compact,
@@ -42,10 +44,8 @@ import {
 import { downloadFilename } from "../downloads";
 import s from "../ui.module.scss";
 
-function expiry(value: unknown, milliseconds = false) {
-  return typeof value === "number"
-    ? new Date(milliseconds ? value : value * 1000).toLocaleString("zh-CN")
-    : text(value);
+function expiry(value: unknown) {
+  return typeof value === "number" ? new Date(value * 1000).toLocaleString("zh-CN") : text(value);
 }
 
 const lastErrorLabels: Record<string, string> = {
@@ -282,7 +282,7 @@ function MaintenanceResults({ results }: { results: Record<string, unknown>[] })
 type ChannelKey = "all" | "cn" | "intl" | "enterprise";
 type ViewMode = "cards" | "list";
 type StatusFilter = "all" | "ready" | "issue" | "disabled";
-type DetailTab = "overview" | "tasks" | "cooldowns" | "raw";
+type DetailTab = "overview" | "credits" | "tasks" | "cooldowns" | "raw";
 
 const PAGE_SIZES = [10, 20, 50, 100, 500, 1000, 2000] as const;
 const PAGE_SIZE_KEY = "codebuddy2api.credPageSize";
@@ -716,6 +716,7 @@ export function Credentials() {
   const renderSyncAndCatalog = (c: Credential) => {
     const cooldowns = Array.isArray(c.cooldowns) ? list(c.cooldowns) : null;
     const trip = c.travel && typeof c.travel === "object" ? object(c.travel) : null;
+    const tokenAt = tokenExpiry(c);
     return (
       <>
         <strong>
@@ -733,6 +734,9 @@ export function Credentials() {
                 ? "同步异常"
                 : "同步正常"}
           </small>
+          {c.token_expired !== true && tokenAt !== null && (
+            <small>Token 至 {dateLabel(tokenAt, now / 1000)}</small>
+          )}
           {cooldowns ? (
             cooldowns.length ? (
               cooldowns.map((cooldown, i) => (
@@ -1118,13 +1122,7 @@ export function Credentials() {
                                   : metric(balance.credits ?? balance.remaining)
                                 : "未知"}
                             </strong>
-                            <small>
-                              {c.token_expires_at !== undefined
-                                ? expiry(c.token_expires_at, true)
-                                : c.expiresAt !== undefined
-                                  ? expiry(c.expiresAt, true)
-                                  : expiry(c.expires_at ?? balance?.soonest_expiry)}
-                            </small>
+                            <BalanceExpiry credits={balance} now={now / 1000} />
                           </div>
                           <div>
                             <span>目录与同步状态</span>
@@ -1192,13 +1190,7 @@ export function Credentials() {
                                 </strong>
                                 {renderSyncIcon(c)}
                               </div>
-                              <small>
-                                {c.token_expires_at !== undefined
-                                  ? expiry(c.token_expires_at, true)
-                                  : c.expiresAt !== undefined
-                                    ? expiry(c.expiresAt, true)
-                                    : expiry(c.expires_at ?? balance?.soonest_expiry)}
-                              </small>
+                              <BalanceExpiry credits={balance} now={now / 1000} />
                             </td>
                             <td>{renderUsageBlock(c, true)}</td>
                             <td>
@@ -1323,6 +1315,7 @@ export function Credentials() {
               {(
                 [
                   ["overview", "概览与请求"],
+                  ["credits", "官方额度"],
                   ["tasks", "自动化配置"],
                   ["cooldowns", "绑定与冷却"],
                   ["raw", "原始诊断"],
@@ -1388,6 +1381,7 @@ export function Credentials() {
                 </Panel>
               </>
             )}
+            {detail.tab === "credits" && <CreditsPanel credential={liveDetail} now={now / 1000} />}
             {detail.tab === "tasks" && (
               <Panel title="自动任务与日常维护">
                 <div className={s.panelBody}>

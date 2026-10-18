@@ -21,6 +21,7 @@ Add accounts by browser login — Mainland China (CN), International WorkBuddy o
 - **Runtime states:** distinguish manual disabling, credential-level authentication circuits and model-level 429 cooldowns. Disabling keeps files; deletion removes them and requires removing model bindings first. Exports preserve safe UTF-8 filenames (otherwise `credential.info`/`credentials.zip`) and contain plaintext credentials; do not share them.
 - **Login drawer:** successful OAuth enrollment closes the drawer and refreshes the list. The official tab keeps `noopener` isolation and must be closed manually. Failures stay visible; closing the drawer stops polling.
 - **Maintenance actions:** each row offers token refresh, check-in and balance sync; batch check-in and sync stay separate. Sync updates balances, catalogs and usage without check-in, travel or trial claims. Busy maintenance returns 409; a client timeout does not cancel server work.
+- **Official credits:** a dedicated detail-drawer tab shows remaining credits, composition and per-segment expiry by package. Categories (plan, activity rewards, welcome benefits, enterprise quota, other) are inferred from package names. Sync failures, snapshots older than a day, partial pages and expired segments are flagged. Card and list expiry is the soonest credit expiry; token validity appears under sync status.
 
 ### Automation
 

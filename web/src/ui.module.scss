@@ -838,6 +838,179 @@ $white: var(--page);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+// 只让日期本身不折行：在连字符处会断成"10-"/"19"，整行不换行又会挤窄表格其他列。
+.credExpiry > span {
+  white-space: nowrap;
+}
+// 套餐类别配色只走主题序列色，亮/暗主题与配色方案自动跟随。
+.creditPlan {
+  --cat: var(--series-requests);
+}
+.creditActivity {
+  --cat: var(--series-credit);
+}
+.creditWelcome {
+  --cat: var(--series-tokens);
+}
+.creditEnterprise {
+  --cat: var(--accent);
+}
+.creditOther {
+  --cat: var(--muted);
+}
+.credUsageBox .creditWarnValue {
+  color: var(--warning);
+}
+.creditMix {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.creditMixBar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.creditMixBar > i {
+  display: block;
+  min-width: 4px;
+  background: var(--cat);
+}
+.creditLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.creditLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.creditLegend strong {
+  font-variant-numeric: tabular-nums;
+}
+.creditLegend small {
+  color: var(--muted);
+}
+.creditDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cat);
+  flex-shrink: 0;
+}
+.creditPackages {
+  gap: 10px;
+}
+.creditPackage {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.creditPackage > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.creditPackage > summary::-webkit-details-marker {
+  display: none;
+}
+.creditPackageHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.creditPackageHead > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.creditCategory {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.creditAmount {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.creditAmount small {
+  font-weight: 400;
+  color: var(--muted);
+}
+.creditTrack {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.creditTrack > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cat);
+}
+.creditMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.creditToggle {
+  margin-left: auto;
+  color: var(--accent);
+}
+.creditToggle::after {
+  content: " ▸";
+}
+.creditPackage[open] .creditToggle::after {
+  content: " ▾";
+}
+.creditPackage .tableWrap {
+  border-top: 1px solid var(--line);
+}
+.creditPackage th,
+.creditPackage td {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.creditExpiredRow td {
+  color: var(--muted);
+}
+@media (max-width: 600px) {
+  .creditTiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  // 窄屏让套餐名独占首行，避免类别标签和金额把名称截成"CodeBudd…"。
+  .creditPackageHead {
+    flex-wrap: wrap;
+  }
+  .creditPackageHead > strong {
+    flex: 1 1 calc(100% - 20px);
+    white-space: normal;
+  }
+}
 .tableUsage {
   display: grid;
   grid-template-columns: repeat(2, minmax(92px, 1fr));
