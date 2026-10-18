@@ -563,7 +563,11 @@ class CredentialPool:
         self._rr = {None: 0, "cn": 0, "intl": 0}
         self._ledger = None              # Prefer credits expiring sooner.
         self._capacity = AccountCapacity()
-        self._scan = scan                # Rescan credentials before selection.
+        self._scan = scan                # Scan the auth directory during reconcile, never per request.
+        # Request-side lookups are rebuilt whenever the entry list changes.
+        self._index_id: dict[str, dict] = {}
+        self._index_cm: dict = {}
+        self._index_identity: dict[str, list[dict]] = {}
         # Explicit paths must survive rejection or eviction so a repaired file re-enters.
         self._configured: list[str] = []
         self._ignored_duplicates: set[str] = set()
@@ -671,9 +675,32 @@ class CredentialPool:
                 if uid:
                     have_uids[identity_key] = cid
                 self._queue_sync(cid)
+            self._rebuild_index()
+
+    def _rebuild_index(self):
+        """Rebuild request-side lookups after the entry list changed; never called per request."""
+        self._index_id = {entry["id"]: entry for entry in self._entries}
+        self._index_cm = {entry["cm"]: entry for entry in self._entries}
+        identity: dict[str, list[dict]] = {}
+        for entry in self._entries:
+            if entry.get("account_key"):
+                identity.setdefault(entry["account_key"], []).append(entry)
+        self._index_identity = identity
+
+    def entry_for(self, cm):
+        """Return the live entry owning this manager, or None after eviction."""
+        return self._index_cm.get(cm)
+
+    def entry_by_id(self, cid):
+        """Return the live entry for one credential path."""
+        return self._index_id.get(cid)
+
+    def entries_by_identity(self, account_key):
+        """Return every live entry sharing one account identity."""
+        return tuple(self._index_identity.get(account_key, ()))
 
     def _queue_sync(self, cid):
-        entry = next((entry for entry in self._entries if entry["id"] == cid), None)
+        entry = self._index_id.get(cid)
         if entry is not None and not model_policy.credential_enabled(CONFIG, entry):
             return
         self._sync_pending.add(cid)
@@ -728,7 +755,7 @@ class CredentialPool:
     def apply_if_current(self, cm, generation, update):
         """Run updates only for enabled accounts with the current credential lease."""
         with self._lock, cm._lock:
-            entry = next((entry for entry in self._entries if entry["cm"] is cm), None)
+            entry = self._index_cm.get(cm)
             if entry is None or not model_policy.credential_enabled(CONFIG, entry):
                 return False
             if not self._lease_matches(cm, generation):
@@ -752,6 +779,7 @@ class CredentialPool:
         self._syncing.discard(cid)
         self._sync_retry.pop(cid, None)
         self._sync_attempts.pop(cid, None)
+        self._rebuild_index()
         invalidate_model_table()
     def prune(self):
         """Remove missing credential files and their session bindings."""
@@ -777,6 +805,8 @@ class CredentialPool:
                 self._model_fail = {k: v for k, v in self._model_fail.items() if k[0] in ids}
                 if CONFIG.get("cred_pool") is self:
                     _publish_model_cache()
+            if len(self._entries) != before:
+                self._rebuild_index()
 
 
     def find_by_uid(self, uid: str, identity: str | None = None) -> Optional[str]:
@@ -956,11 +986,35 @@ class CredentialPool:
         paths = find_auth_files() if self._scan else [Path(cid) for cid in self._configured]
         self.reload(paths, reset=False)
 
+    def fingerprint(self):
+        """Return a cheap directory fingerprint so reconcile only runs after a real change."""
+        configured = {str(path) for path in find_auth_files()} if self._scan else set(self._configured)
+        rows = []
+        for cid in sorted(configured):
+            try:
+                st = os.stat(cid)
+            except OSError:
+                rows.append((cid, None))
+                continue
+            rows.append((cid, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size))
+        return (self._scan, tuple(rows))
+
+    def reconcile(self, previous=None):
+        """Apply file changes outside the request path; returns the new fingerprint."""
+        current = self.fingerprint()
+        if previous is None or current != previous:
+            self._rescan()
+        return current
+
     def _healthy(self, e: dict) -> bool:
         return model_policy.credential_enabled(CONFIG, e) and time.time() >= e["fail_until"]
 
     @staticmethod
     def _entry_profile(entry):
+        # Reload caches the parsed profile, so the request path never re-reads the file here.
+        profile = entry.get("profile")
+        if profile:
+            return profile
         try:
             return entry["cm"].summary().get("profile", "cn-cli")
         except Exception:
@@ -1117,7 +1171,7 @@ class CredentialPool:
     def pick(self, skey: str | None, model: str | None = None, *, region=None,
              tried=(), with_capacity=False, requirements=None) -> CredentialManager | None:
         """Select a healthy sticky or round-robin credential, preferring eligible zero-rate accounts."""
-        self._rescan()  # Reload and prune acquire their own locks.
+        # The candidate list comes from the indexes; file changes are applied by background reconcile.
         started = time.perf_counter()
         waiting = time.perf_counter()
         self._lock.acquire()
@@ -1186,8 +1240,10 @@ class CredentialPool:
                 self.cooldown(cm, reason=reason, generation=generation)
                 continue
             with self._lock:
-                self.reload([cm.path], reset=False)
-                entry = next((entry for entry in self._entries if entry["cm"] is cm), None)
+                entry = self._index_cm.get(cm)
+                if entry is not None and cm._generation != entry.get("generation"):
+                    self.reload([cm.path], reset=False)  # Ownership changed on disk: re-read one file.
+                    entry = self._index_cm.get(cm)
                 if (entry is not None and cm._generation == generation and self._healthy(entry)
                         and self._eligible(entry, model, region=region, profile=profile) and self._model_healthy(entry, model)):
                     if requirements is not None:
@@ -1453,6 +1509,22 @@ def _refresher_loop(pool: CredentialPool):
             pool.refresh_due()
         except Exception as e:
             _log(f"[cred] 刷新线程异常: {e}")
+
+CRED_RECONCILE_INTERVAL_S = 5   # Credential directory polling interval for background reconcile
+
+
+def _reconcile_loop(pool: CredentialPool):
+    """Apply credential file changes in the background so requests never scan the pool."""
+    try:
+        previous = pool.fingerprint()
+    except Exception:
+        previous = None
+    while True:
+        time.sleep(CRED_RECONCILE_INTERVAL_S)
+        try:
+            previous = pool.reconcile(previous)
+        except Exception as e:
+            _log(f"[cred] 目录变更处理异常: {_network_error_text(e)}")
 
 CHECKIN_FIRST_DELAY = 30     # Initial check-in delay in seconds
 HOUSEKEEP_INTERVAL = 3600    # Account maintenance interval in seconds
@@ -2737,8 +2809,6 @@ def _profile_has_credits(profile: str) -> bool:
 def current_models(region: str | None = None) -> list[str]:
     """Merge models eligible for current accounts without region-specific client URLs."""
     pool = CONFIG.get("cred_pool")
-    if pool is not None:
-        pool._rescan()
     with pool._lock if pool is not None else nullcontext():
         configured = _configured_profiles(region)
         out, has_auto = [], False
@@ -2784,8 +2854,6 @@ def current_models(region: str | None = None) -> list[str]:
 def current_model_details(region: str | None = None) -> list[dict]:
     """Return public model rates with per-profile values and the minimum eligible rate."""
     pool = CONFIG.get("cred_pool")
-    if pool is not None:
-        pool._rescan()
     details: dict[str, dict] = {}
     declarations = {}
     for name in current_models(region):
@@ -2965,9 +3033,6 @@ def guard_model(name: str, *, region=None, resolved=False) -> None:
     model_policy.check_resolved(CONFIG, name)
     if not CONFIG.get("model_guard"):
         return
-    pool = CONFIG.get("cred_pool")
-    if pool is not None:
-        pool._rescan()
     if _model_profiles(name, region):
         return
     if _catalog_pending(region):
@@ -4625,6 +4690,8 @@ def main():
                          daemon=True, name="service-lease").start()
     threading.Thread(target=_refresher_loop, args=(CONFIG["cred_pool"],),
                      daemon=True, name="cred-refresher").start()
+    threading.Thread(target=_reconcile_loop, args=(CONFIG["cred_pool"],),
+                     daemon=True, name="cred-reconcile").start()
     if credits_mod is not None:
         threading.Thread(target=_housekeeper_loop, args=(CONFIG["cred_pool"], ledger),
                          daemon=True, name="cred-housekeeper").start()

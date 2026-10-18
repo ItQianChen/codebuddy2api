@@ -428,8 +428,8 @@ class IdentitySyncTests(unittest.TestCase):
                     patch.object(c.uvicorn, "run", side_effect=barrier), \
                     patch("sys.stderr", new=io.StringIO()):
                 c.main()
-            # refresher, housekeeper, lease heartbeat and the server itself.
-            self.assertEqual(len(observed), 4)
+            # refresher, reconcile, housekeeper, lease heartbeat and the server itself.
+            self.assertEqual(len(observed), 5)
 
 
 if __name__ == "__main__":
