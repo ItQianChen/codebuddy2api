@@ -1,12 +1,14 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   api,
+  catalogScanResponse,
   credentialResponse,
   errorMessage,
   list,
   modelResponse,
   object,
   useResource,
+  type CatalogScan,
   type Credential,
   type ModelRule,
   type RecordValue,
@@ -505,6 +507,50 @@ export function Models() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [guardNotice, setGuardNotice] = useState<string | null>(null);
+  const [scan, setScan] = useState<CatalogScan | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const loadScan = useCallback(() => {
+    void api
+      .get("/models/scan")
+      .then((response) => {
+        const next = catalogScanResponse(response.data);
+        setScan(next);
+        // A scan that just finished may have refreshed the catalog list.
+        if (next.status === "completed" || next.status === "failed") resource.reload();
+      })
+      .catch(() => {
+        // 被动状态轮询失败不升级为页面错误；提交扫描的失败才提示。
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    loadScan(); // An in-progress scan survives page reloads.
+  }, [loadScan]);
+  useEffect(() => {
+    if (scan?.status !== "running") return;
+    const timer = setInterval(loadScan, 2000);
+    return () => clearInterval(timer);
+  }, [scan?.status, loadScan]);
+  const scanError = scan?.status === "failed" ? scan.error : null;
+  const scanVersions = scan
+    ? Object.entries(scan.profiles)
+        .filter(([, row]) => row.distinct > 1)
+        .map(([name, row]) => `${name}：${row.distinct} 组目录版本`)
+        .join("；")
+    : "";
+  const startScan = () => {
+    if (scanBusy) return;
+    setScanBusy(true);
+    setError(null);
+    void api
+      .post("/models/scan")
+      .then((response) => {
+        setScan(catalogScanResponse(response.data));
+        resource.reload();
+      })
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => setScanBusy(false));
+  };
   const toggleGuard = (key: "model_guard" | "model_capability_guard", next: boolean) => {
     if (!resource.data || busy) return;
     setBusy(true);
@@ -550,6 +596,16 @@ export function Models() {
               刷新目录
             </button>
             <button
+              disabled={scanBusy || scan?.status === "running"}
+              onClick={startScan}
+              title="逐个账号刷新目录，仅由你手动触发；单账号失败时保留其旧目录"
+            >
+              <Icon name="refresh" />
+              {scan?.status === "running"
+                ? `扫描中 ${scan.completed}/${scan.total}`
+                : "扫描全部账号模型"}
+            </button>
+            <button
               className={s.primary}
               disabled={!resource.data}
               onClick={() => {
@@ -569,6 +625,20 @@ export function Models() {
       {guardNotice && (
         <p className={s.successNotice} role="status">
           {guardNotice}
+        </p>
+      )}
+      {scan && scan.status !== "idle" && (
+        <p className={s.note} role="status">
+          全量扫描
+          {scan.status === "running"
+            ? `进行中 ${scan.completed}/${scan.total}`
+            : scan.status === "completed"
+              ? "已完成"
+              : "失败"}
+          ：成功 {scan.success} · 失败 {scan.failed} · 目录差异 {scan.differences}
+          {scanError ? ` · ${scanError}` : ""}
+          {scanVersions ? ` · ${scanVersions}` : ""}
+          ；失败账号保留上次成功的目录。
         </p>
       )}
       <Panel

@@ -174,6 +174,11 @@ class ControlStore:
         # Published dictionaries are never mutated; SQLite writer locks cannot stall routing.
         return copy.deepcopy(self._snapshot)
 
+    @property
+    def revision(self):
+        """Current revision without copying the snapshot, for cache and policy views."""
+        return self._snapshot["revision"]
+
     def _update(self, revision, change):
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")

@@ -4,6 +4,7 @@
 import base64
 from copy import deepcopy
 import json
+import itertools
 import math
 import os
 import re
@@ -794,6 +795,22 @@ def fetch_request_usage(access_token: str, days: int = USAGE_MAX_DAYS,
 # Atomic JSON persistence for per-credential credit and check-in state
 # ---------------------------------------------------------------------------
 
+_LEDGER_REVISION = itertools.count(1)
+
+
+def _solvent_row(row: dict | None) -> bool:
+    """Mirror the pool's has-credit test so only eligibility flips bump the routing revision."""
+    credits = (row or {}).get("credits") or {}
+    if not credits:
+        return True
+    if credits.get("unlimited") and credits.get("enterprise"):
+        return True
+    try:
+        return float(credits.get("credits") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class CreditLedger:
     """Persist per-credential check-in and balance snapshots for expiry-aware scheduling."""
 
@@ -802,6 +819,10 @@ class CreditLedger:
         self.path = Path(store.path if store is not None else path)
         self._lock = threading.Lock()
         self._data: dict = {"version": 1, "creds": {}}
+        # Globally unique so a rebuilt ledger can never reuse the previous one's cache key.
+        self.revision = next(_LEDGER_REVISION)
+        # Bumped only when an account's solvency flips; value churn must not clear shards.
+        self.routing_revision = next(_LEDGER_REVISION)
         self._load()
 
     def _load(self):
@@ -816,6 +837,7 @@ class CreditLedger:
             self._data = {"version": 1, "creds": {}}
 
     def _save(self):
+        self.revision = next(_LEDGER_REVISION)
         if self._store is not None:
             self._store.put("credits", self._data)
             return
@@ -849,7 +871,8 @@ class CreditLedger:
     def remove(self, cred_id: str):
         """Clear persisted credit, check-in and error state after an identity change."""
         with self._lock:
-            self._data["creds"].pop(cred_id, None)
+            if _solvent_row(self._data["creds"].pop(cred_id, None)) is not True:
+                self.routing_revision = next(_LEDGER_REVISION)
             self._save()
 
     # Check-in state
@@ -878,6 +901,9 @@ class CreditLedger:
 
     def update_credits(self, cred_id: str, result: dict):
         with self._lock:
+            # Snapshot before mutating: _entry may hand back the very row read here.
+            was_solvent = _solvent_row(self._data["creds"].get(cred_id))
+            had_balance_row = bool((self._data["creds"].get(cred_id) or {}).get("credits"))
             e = self._entry(cred_id)
             e["credits"] = {
                 "credits": result.get("credits"),
@@ -893,6 +919,10 @@ class CreditLedger:
                 "unlimited": bool(result.get("unlimited")) and bool(result.get("enterprise")),
             }
             e["error"] = None
+            # A first balance row changes eligibility too: an absent row never matched
+            # _has_credit for intl accounts, so its appearance must move the routing revision.
+            if not had_balance_row or _solvent_row({"credits": e["credits"]}) != was_solvent:
+                self.routing_revision = next(_LEDGER_REVISION)
             self._save()
 
     def note_error(self, cred_id: str, message: str):

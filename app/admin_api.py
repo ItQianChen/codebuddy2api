@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, Response
 
 from . import auth_oauth
+from . import perf_metrics
 from .admin_auth import AdminAuth, AdminMiddleware, COOKIE_NAME, SESSION_TTL, error_response, same_origin
 from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
@@ -338,8 +339,20 @@ def install_admin(app, config, gateway):
                     "model_guard_locked": bool(resolved.get("model_guard", {}).get("locked")),
                     "model_capability_guard": config.get("model_capability_guard", True),
                     "model_capability_guard_locked": bool(resolved.get("model_capability_guard", {}).get("locked")),
+                    "catalog": gateway.catalog_status(),
                 })
         return await run_in_threadpool(build_models)
+
+    @route("POST", "/admin/models/scan")
+    async def models_scan_start(request):
+        """Start one user-triggered full catalog scan; it is never a periodic task."""
+        result = await run_in_threadpool(gateway.start_catalog_scan)
+        event("models.scan")
+        return JSONResponse(result)
+
+    @route("GET", "/admin/models/scan")
+    async def models_scan_state(request):
+        return JSONResponse(gateway.catalog_scan_view())
 
     def checked_rule(source, data, *, creating=False):
         if "custom" in data:
@@ -686,5 +699,15 @@ def install_admin(app, config, gateway):
             return result
         result = await run_in_threadpool(build_dashboard)
         return result if isinstance(result, Response) else JSONResponse(result)
+
+    @route("GET", "/admin/performance")
+    async def performance_get(request):
+        """Read-only process counters; no routing state is exposed or mutated."""
+        payload = perf_metrics.snapshot()
+        pool = config.get("cred_pool")
+        scheduler = getattr(pool, "_scheduler", None)
+        payload["scheduler"] = {"mode": config.get("routing_scheduler", "indexed"),
+                                **(scheduler.report() if scheduler is not None else {"shards": [], "mismatches": []})}
+        return JSONResponse(payload)
 
     return auth

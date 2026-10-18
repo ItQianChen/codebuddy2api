@@ -84,6 +84,7 @@ class LoginTests(unittest.TestCase):
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(saved.stat().st_mode), 0o600)
         self.assertIsNone(pool.pick(None, region="cn"))  # Never treat international credentials as domestic.
+        pool.reconcile()  # Background reconcile discovers the file the login command just saved.
         self.assertEqual(pool.pick(None).summary()["uid"], "u1")
         self.assertIn("账号已保存", self.stdout.getvalue())
         self.assert_no_tokens_printed()

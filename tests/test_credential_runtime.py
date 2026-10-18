@@ -264,6 +264,30 @@ class CredentialRuntimeTests(unittest.TestCase):
         pool._rescan()
         self.assertEqual([e["id"] for e in pool.entries()], [str(second)])
 
+    def test_request_path_stays_indexed_and_reconcile_applies_file_changes(self):
+        first = self.credential(age=0)
+        pool = converter.CredentialPool([first], scan=True)
+        manager = pool.first()
+        self.assertIs(pool.entry_for(manager), pool._entries[0])
+        self.assertIs(pool.entry_by_id(str(first)), pool._entries[0])
+        second = self.credential("second.info", uid="second", age=0)
+        self.assertIsNotNone(pool.pick("session", "glm-5.3-flash"))  # A request never scans the directory.
+        self.assertEqual(len(pool.entries()), 1)
+        reloads = []
+        original = pool.reload
+        with patch.object(pool, "reload", side_effect=lambda paths, **kw: (reloads.append(list(paths)),
+                                                                        original(paths, **kw))[1]):
+            fingerprint = pool.reconcile()
+            self.assertEqual(len(pool.entries()), 2)
+            self.assertTrue(reloads)
+            reloads.clear()
+            self.assertEqual(pool.reconcile(fingerprint), fingerprint)
+            self.assertEqual(reloads, [])  # An unchanged directory is not re-read.
+        first.unlink()
+        pool.reconcile(fingerprint)
+        self.assertEqual([e["id"] for e in pool.entries()], [str(second)])
+        self.assertIsNone(pool.entry_for(manager))
+
     def test_encrypted_envelope_tokens_fail_fast_and_stay_out_of_pool(self):
         valid = self.credential("valid.info", uid="valid", age=0)
         envelope = self.root / "envelope.info"
