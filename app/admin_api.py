@@ -691,6 +691,11 @@ def install_admin(app, config, gateway):
     @route("GET", "/admin/performance")
     async def performance_get(request):
         """Read-only process counters; no routing state is exposed or mutated."""
-        return JSONResponse(perf_metrics.snapshot())
+        payload = perf_metrics.snapshot()
+        pool = config.get("cred_pool")
+        scheduler = getattr(pool, "_scheduler", None)
+        payload["scheduler"] = {"mode": config.get("routing_scheduler", "indexed"),
+                                **(scheduler.report() if scheduler is not None else {"shards": [], "mismatches": []})}
+        return JSONResponse(payload)
 
     return auth

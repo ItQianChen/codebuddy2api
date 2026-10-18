@@ -73,6 +73,7 @@ def build(converter, credits_mod, count: int, root: Path):
         merged = catalogs[account["profile"]] = catalogs[account["profile"]] or []
         merged.extend(account["models"])
     config.update({"cred_pool": pool, "ledger": ledger, "account_catalogs": accounts,
+                   "catalog_index": converter._publish_catalog_index(accounts),
                    "model_catalogs": catalogs, "models_remote": catalogs["cn-cli"],
                    "models_intl": catalogs["intl-cli"], "model_cache": None,
                    "model_guard": True, "max_inflight_per_account": 0,
@@ -129,7 +130,8 @@ def run(converter, credits_mod, perf_metrics, count, repeat, model):
     finally:
         temporary.cleanup()
         converter.CONFIG.update({"cred_pool": None, "ledger": None, "account_catalogs": None,
-                                 "model_catalogs": {}, "models_remote": None, "models_intl": None})
+                                 "catalog_index": None, "model_catalogs": {},
+                                 "models_remote": None, "models_intl": None})
     return rows
 
 

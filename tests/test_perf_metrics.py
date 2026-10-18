@@ -108,7 +108,7 @@ class AdminPerformanceViewTests(unittest.TestCase):
         result = self.client.get("/admin/performance")
         self.assertEqual(result.status_code, 200, result.text)
         body = result.json()
-        self.assertEqual(set(body), {"uptime_seconds", "counters", "timings"})
+        self.assertEqual(set(body), {"uptime_seconds", "counters", "timings", "scheduler"})
         self.assertGreaterEqual(body["counters"]["route_pick_duration_marker"], 1)
         self.assertNotIn("synthetic-key", result.text)
 

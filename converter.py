@@ -74,6 +74,7 @@ from app.message_normalization import merge_intl_user_images
 from app.adapters.chat_input import normalize_chat_messages
 from app.model_catalog_view import INTERNATIONAL as SHARED_INTL_PROFILES, share_models
 from app.catalog_index import CatalogIndex
+from app.routing_scheduler import RoutingScheduler
 from app.catalog_index import account_scope as _account_scope
 from app.inference_auth import require_api_key
 from app.admin_auth import SessionStoreError
@@ -576,6 +577,7 @@ class CredentialPool:
         self._index_cm: dict = {}
         self._index_identity: dict[str, list[dict]] = {}
         self.revision = next(_POOL_REVISION)   # Bumped whenever the entry list is rebuilt.
+        self._scheduler = RoutingScheduler()   # Revision-keyed eligibility shards.
         # Explicit paths must survive rejection or eviction so a repaired file re-enters.
         self._configured: list[str] = []
         self._ignored_duplicates: set[str] = set()
@@ -688,6 +690,7 @@ class CredentialPool:
     def _rebuild_index(self):
         """Rebuild request-side lookups after the entry list changed; never called per request."""
         self.revision = next(_POOL_REVISION)
+        self._scheduler.clear()
         self._index_id = {entry["id"]: entry for entry in self._entries}
         self._index_cm = {entry["cm"]: entry for entry in self._entries}
         identity: dict[str, list[dict]] = {}
@@ -1149,13 +1152,21 @@ class CredentialPool:
             else:
                 break
 
+    def _shard_revisions(self, policy=None) -> tuple:
+        """Revisions that change static eligibility; any move invalidates every shard."""
+        return (self.revision, model_policy.revision(CONFIG, policy), _catalog_revision,
+                getattr(self._ledger, "revision", 0))
+
     def _candidates(self, model: str | None, *, region=None, tried=(), policy=None) -> list[dict]:
         """Exclude tried credentials and rank candidates by zero rate and credit expiry."""
-        perf_metrics.inc("candidate_checks", len(self._entries))
         tried = set(tried)
-        healthy = [entry for entry in self._entries if entry["cm"] not in tried
+        eligible = self._scheduler.candidates(
+            mode=RoutingScheduler.mode(CONFIG), revisions=self._shard_revisions(policy),
+            model=model, region=region, entries=self._entries,
+            evaluate=lambda entry: self._eligible(entry, model, region=region, policy=policy))
+        perf_metrics.inc("candidate_checks", len(eligible))
+        healthy = [entry for entry in eligible if entry["cm"] not in tried
                    and self._healthy(entry, policy)
-                   and self._eligible(entry, model, region=region, policy=policy)
                    and self._model_healthy(entry, model)
                    and self._model_servable(entry, model)]
         if not healthy:
@@ -2080,6 +2091,7 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "account_catalogs": None,  # Account-scoped models/serves; None enables legacy embedding
                 "trial_ledger": None,
                 "model_guard": True,     # Reject models absent from authorized catalogs
+                "routing_scheduler": "indexed",  # legacy | shadow | indexed eligibility shards
                 "max_images": 16, "image_policy": "truncate",
                 "max_request_bytes": 32 * 1024 * 1024, "log_body_limit": 65536,
                 "max_inbound_bytes": 64 * 1024 * 1024,
@@ -4682,6 +4694,9 @@ def main():
     ap.add_argument("--stream-mode", choices=_STREAM_MODES,
                     default=os.environ.get("CODEBUDDY2API_STREAM_MODE", "compatible"),
                     help="流式传输：compatible 保持兼容聚合策略，realtime 增量发送且不重生成工具参数；默认 compatible")
+    ap.add_argument("--routing-scheduler", choices=("legacy", "shadow", "indexed"),
+                    default=os.environ.get("CODEBUDDY2API_ROUTING_SCHEDULER", "indexed"),
+                    help="路由调度：indexed 复用按模型分片（默认）；shadow 记录新旧差异并仍返回旧结果；legacy 每次全量判断")
     ap.add_argument("--model-capability-guard", type=_boolean_arg, nargs="?", const=True,
                     default=os.environ.get("CODEBUDDY2API_MODEL_CAPABILITY_GUARD", "true"),
                     help="按账号模型声明预检图片、工具、思考和输出上限；false 仅关闭新增能力预检")
@@ -4719,7 +4734,7 @@ def main():
                 "tool_call_max_retry", "max_inbound_bytes", "max_collect_bytes", "max_concurrent",
                 "failover_max", "retry_write_timeout", "upstream_keepalive", "max_inflight_per_account",
                 "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins",
-                "responses_projection_mode", "responses_projection_max_bytes"):
+                "responses_projection_mode", "responses_projection_max_bytes", "routing_scheduler"):
         CONFIG[key] = getattr(args, key)
     CONFIG["api_key"] = args.api_key
     CONFIG["desensitize"] = args.desensitize
