@@ -1,4 +1,4 @@
-import { metric, number, type Credential, type RecordValue } from "./api";
+import { metric, type Credential, type RecordValue } from "./api";
 import { Badge, Empty, Icon, Panel } from "./components";
 import {
   CATEGORY_LABELS,
@@ -91,22 +91,24 @@ function PackageRow({ pkg, now }: { pkg: CreditPackage; now: number }) {
   );
 }
 
-/** Balance column caption: the soonest credit expiry, never the token expiry. */
+/** Balance column caption: the soonest live credit expiry, never the token expiry. */
 export function BalanceExpiry({ credits, now }: { credits: RecordValue | null; now: number }) {
-  const at = number(credits?.soonest_expiry);
+  // 持久化的 soonest_expiry 在两次同步之间会过期，必须和 tab 一样从各段重算。
+  const b = credits ? creditBreakdown(credits, now) : null;
   return (
     <small className={s.credExpiry}>
-      {!credits ? (
+      {!b ? (
         "尚未同步"
-      ) : credits.enterprise === true && credits.unlimited === true ? (
+      ) : b.unlimited ? (
         "企业无限额度"
-      ) : at === null || at <= 0 ? (
-        "无到期信息"
-      ) : (
+      ) : b.soonest ? (
         <>
-          最近到期 <span>{dateLabel(at, now)}</span>
-          {at <= now && <span>（已过期）</span>}
+          最近到期 <span>{dateLabel(b.soonest.at, now)}</span>
         </>
+      ) : b.segmentCount > 0 && b.expired.count === b.segmentCount ? (
+        "已全部过期，待同步"
+      ) : (
+        "无到期信息"
       )}
     </small>
   );

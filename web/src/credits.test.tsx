@@ -112,6 +112,10 @@ it("grants unlimited only to enterprise results and flags day-old snapshots", ()
   expect(caption.container.textContent).toBe("无到期信息");
   caption.rerender(<BalanceExpiry credits={{ unlimited: true, enterprise: true }} now={NOW} />);
   expect(caption.container.textContent).toBe("企业无限额度");
+  caption.rerender(
+    <BalanceExpiry credits={{ segments: [seg("签到", "a", 5, NOW - DAY)] }} now={NOW} />,
+  );
+  expect(caption.container.textContent).toBe("已全部过期，待同步");
   expect(creditBreakdown({ fetched_at: NOW - DAY }, NOW).stale).toBe(false);
   expect(creditBreakdown({ fetched_at: NOW - DAY - 1 }, NOW).stale).toBe(true);
 });
@@ -129,7 +133,8 @@ it("shows credit expiry on the card and package composition in the official cred
     credits: {
       credits: 1250,
       fetched_at: now - 3 * DAY,
-      soonest_expiry: now + 2 * DAY,
+      // 快照时最早的一段尚未过期；卡片必须跳过它，显示下一段仍有效的到期时间。
+      soonest_expiry: now - DAY,
       segments: [
         seg("CodeBuddy个人版国内运营裂变包", "TCACA_code_007_a", 150, now + 2 * DAY),
         seg("CodeBuddy个人版国内运营裂变包", "TCACA_code_007_a", 100, now - DAY),
