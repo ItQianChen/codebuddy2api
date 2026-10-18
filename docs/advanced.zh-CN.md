@@ -244,6 +244,7 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 - `routing_scheduler`：`indexed`（默认）按模型、请求内别名和版本组合复用同一份候选分片；`shadow` 同时执行旧的全量判断，把差异记录在 `GET /admin/performance`，但仍返回旧结果；`legacy` 每次请求重新判断全部凭证。
 - `catalog_probe_mode`：`representative`（默认）每个产品每 TTL 周期只探测一个代表凭证，优先当前来源账号，再轮换到目录最旧的账号，失败按指数退避；`account` 每周期刷新全部已同步账号。未探测或探测失败的账号保留上次可信目录，`/v1/models` 仍是当前账号目录并集，只有经过账号级验证的模型才会发布。
 - `POST /admin/models/scan` 在后台把当前全部账号各刷新一次，`GET /admin/models/scan` 返回进度、成功数、失败数与目录差异数；它是一次性校准入口，不是周期任务。
+- `housekeep_concurrency`（默认 `4`）限制后台维护并发：余额、目录和用量各自独立限额，设为 `1` 即回到原来的串行周期；账号同步失败按指数退避加抖动重试。5 分钟内已同步的账号会被下一个完整周期跳过，因此事件触发周期不会重复同步。
 
 ### 模型声明与图片兼容
 

@@ -244,6 +244,7 @@ Routing and catalog maintenance are switchable without reverting data:
 - `routing_scheduler`: `indexed` (default) reuses one eligibility shard per model, request-scoped alias and revision set; `shadow` also runs the legacy scan, records mismatches under `GET /admin/performance` and still returns the legacy answer; `legacy` re-evaluates every credential on every request.
 - `catalog_probe_mode`: `representative` (default) probes one representative credential per product profile per TTL cycle, preferring the current source and rotating to the stalest account, with exponential backoff after failures; `account` refreshes every synced account each cycle. An unprobed or failed account keeps its last trusted catalog, so `/v1/models` stays the union of current account catalogs and only manually verified models are published.
 - `POST /admin/models/scan` refreshes every current account once, in the background; `GET /admin/models/scan` reports progress, successes, failures and catalog differences. It is the only way to calibrate all accounts at once and is never a periodic task.
+- `housekeep_concurrency` (default `4`) bounds maintenance workers; balances, catalogs and usage each get an independent slot pool, `1` restores the previous serial cycle, and failed account syncs retry with exponential backoff plus jitter. Accounts synced within five minutes are skipped by the next full cycle, so an event-driven cycle never repeats them.
 
 ### Model declarations and image compatibility
 

@@ -103,6 +103,8 @@ SCHEMA = {
     "catalog_probe_mode": _item("representative", "string", "目录探测模式",
                                 env="CODEBUDDY2API_CATALOG_PROBE_MODE",
                                 choices=["account", "representative"]),
+    "housekeep_concurrency": _item(4, "integer", "后台维护并发数", env="CODEBUDDY2API_HOUSEKEEP_CONCURRENCY",
+                                   minimum=1, maximum=16),
     "model_capability_guard": _item(True, "boolean", "模型能力预检", env="CODEBUDDY2API_MODEL_CAPABILITY_GUARD"),
     "max_images": _item(16, "integer", "单请求图片上限", env="CODEBUDDY2API_MAX_IMAGES", minimum=0, maximum=10000),
     "image_policy": _item("truncate", "string", "超额图片策略", env="CODEBUDDY2API_IMAGE_POLICY", choices=["truncate", "error"]),

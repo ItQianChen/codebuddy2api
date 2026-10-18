@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import random
 import threading
 import time
 
@@ -128,9 +129,11 @@ class AggregateCatalog:
         with self._lock:
             row = dict(self._data["profiles"].get(profile) or {})
             failures = min(int(row.get("failures") or 0) + 1, _MAX_FAILURES)
+            delay = min(RETRY_BASE_S * 2 ** (failures - 1), RETRY_MAX_S)
             row.update(source=source if source is not None else row.get("source"),
                        failures=failures, status="error",
-                       retry_at=now + min(RETRY_BASE_S * 2 ** (failures - 1), RETRY_MAX_S))
+                       # Jitter keeps several failing profiles from retrying in lockstep.
+                       retry_at=now + delay * random.uniform(1.0, 1.25))
             row.setdefault("fetched_at", 0.0)
             row.setdefault("models", [])
             self._data["profiles"][profile] = row

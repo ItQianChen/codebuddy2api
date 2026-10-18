@@ -10,6 +10,7 @@ import itertools
 import json
 import math
 import os
+import random
 import re
 import secrets
 import shutil
@@ -18,6 +19,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -733,7 +735,13 @@ class CredentialPool:
             self._sync_retry = {cid: deadline for cid, deadline in self._sync_retry.items() if cid in active}
             due = {cid for cid, deadline in self._sync_retry.items() if deadline <= time.monotonic()}
             self._sync_pending.update(due)
-            ids = active if all_entries else set(self._sync_pending)
+            if all_entries:
+                # A cycle right after an event must not repeat accounts that just succeeded.
+                cutoff = time.time() - HOUSEKEEP_MIN_SYNC_GAP_S
+                ids = {entry["id"] for entry in self._entries
+                       if entry["id"] in active and float(entry.get("synced_at") or 0.0) <= cutoff}
+            else:
+                ids = set(self._sync_pending)
             self._sync_pending.difference_update(ids)
             if not self._sync_pending:
                 self._sync_event.clear()
@@ -745,13 +753,18 @@ class CredentialPool:
             self._syncing.difference_update(ids)
             present = {entry["id"] for entry in self._entries if model_policy.credential_enabled(CONFIG, entry)}
             for cid in ids:
+                entry = self._index_id.get(cid)
                 if cid in failed and cid in present and cid not in self._sync_pending:
                     attempt = min(self._sync_attempts.get(cid, 0) + 1, 5)
                     self._sync_attempts[cid] = attempt
-                    self._sync_retry[cid] = time.monotonic() + min(60 * 2 ** (attempt - 1), 900)
+                    delay = min(60 * 2 ** (attempt - 1), 900)
+                    # Jitter keeps repeated upstream refusals from retrying in lockstep.
+                    self._sync_retry[cid] = time.monotonic() + delay * random.uniform(1.0, 1.25)
                 else:
                     self._sync_retry.pop(cid, None)
                     self._sync_attempts.pop(cid, None)
+                    if entry is not None:
+                        entry["synced_at"] = time.time()
 
     def sync_pending(self, region=None):
         with self._lock:
@@ -1555,6 +1568,38 @@ def _reconcile_loop(pool: CredentialPool):
 
 CHECKIN_FIRST_DELAY = 30     # Initial check-in delay in seconds
 HOUSEKEEP_INTERVAL = 3600    # Account maintenance interval in seconds
+HOUSEKEEP_MIN_SYNC_GAP_S = 300   # Skip accounts synced this recently, so event cycles never repeat them
+HOUSEKEEP_CONCURRENCY = 4        # Default bounded workers per upstream endpoint family
+_ENDPOINT_KINDS = ("credits", "models", "usage")
+_endpoint_limits: dict = {}
+
+
+def _housekeep_concurrency() -> int:
+    """Resolve the bounded worker count; 1 restores the previous serial behaviour."""
+    value = CONFIG.get("housekeep_concurrency", HOUSEKEEP_CONCURRENCY)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else HOUSEKEEP_CONCURRENCY
+
+
+def _endpoint_semaphore(kind: str):
+    """One independent limit per upstream endpoint family, so no phase starves another."""
+    limit = _housekeep_concurrency()
+    if _endpoint_limits.get("limit") != limit:
+        _endpoint_limits.clear()
+        _endpoint_limits["limit"] = limit
+        for name in _ENDPOINT_KINDS:
+            _endpoint_limits[name] = threading.BoundedSemaphore(limit)
+    return _endpoint_limits[kind]
+
+
+def _bounded_map(function, items, limit):
+    """Run function over items on a bounded worker pool, yielding results in input order."""
+    items = list(items)
+    if limit <= 1 or len(items) <= 1:
+        for item in items:
+            yield function(item)
+        return
+    with ThreadPoolExecutor(max_workers=min(limit, len(items)), thread_name_prefix="housekeep") as workers:
+        yield from workers.map(function, items)
 
 
 def _bearer_token(headers: dict) -> str:
@@ -1764,9 +1809,10 @@ def _account_catalog_key(profile, headers):
 
 def _fetch_catalog(headers):
     """Fetch both catalog scopes for one account token; the only upstream call involved."""
-    scopes = credits_mod.fetch_model_scopes(
-        _bearer_token(headers), domain=headers.get("X-Domain", ""),
-        uid=headers.get("X-User-Id", ""), enterprise_id=headers.get("X-Enterprise-Id", ""))
+    with _endpoint_semaphore("models"):
+        scopes = credits_mod.fetch_model_scopes(
+            _bearer_token(headers), domain=headers.get("X-Domain", ""),
+            uid=headers.get("X-User-Id", ""), enterprise_id=headers.get("X-Enterprise-Id", ""))
     return scopes["picker"], scopes["account"]
 
 
@@ -1780,32 +1826,38 @@ def _store_catalog(pool, cache, entry, generation, key, models, serves):
     return pool.apply_if_current(entry["cm"], generation, publish)
 
 
+def _sync_one_account_catalog(pool, ledger, entry, generation, headers, profile, failed, cache):
+    """Refresh one account's own catalog when it is stale or marked dirty."""
+    if not model_policy.credential_enabled(CONFIG, entry):
+        return
+    key = _account_catalog_key(profile, headers)
+    if cache.fresh(key) and not entry.get("catalog_dirty"):
+        return
+    perf_metrics.inc("catalog_fetch_count")
+    try:
+        models, serves = _fetch_catalog(headers)
+        if _store_catalog(pool, cache, entry, generation, key, models, serves):
+            _log(f"[models] {profile} 模型表已刷新: 选择器 {len(models)} 个，"
+                 f"账号根表 {len(serves)} 个")
+        else:
+            failed.add(entry["id"])
+    except Exception as error:
+        perf_metrics.inc("catalog_fetch_failures")
+        failed.add(entry["id"])
+        _sync_error(pool, ledger, entry, generation, "models", error)
+
+
 def _sync_account_catalogs(pool, ledger, refs, failed, cache):
     """Refresh every synced account's own catalog; used by the account probe mode."""
-    for entry, generation, headers, profile in refs.values():
-        if not model_policy.credential_enabled(CONFIG, entry):
-            continue
-        key = _account_catalog_key(profile, headers)
-        if cache.fresh(key) and not entry.get("catalog_dirty"):
-            continue
-        perf_metrics.inc("catalog_fetch_count")
-        try:
-            models, serves = _fetch_catalog(headers)
-            if _store_catalog(pool, cache, entry, generation, key, models, serves):
-                _log(f"[models] {profile} 模型表已刷新: 选择器 {len(models)} 个，"
-                     f"账号根表 {len(serves)} 个")
-            else:
-                failed.add(entry["id"])
-        except Exception as error:
-            perf_metrics.inc("catalog_fetch_failures")
-            failed.add(entry["id"])
-            _sync_error(pool, ledger, entry, generation, "models", error)
+    list(_bounded_map(lambda ref: _sync_one_account_catalog(pool, ledger, *ref, failed=failed, cache=cache),
+                      list(refs.values()), _housekeep_concurrency()))
 
 
 def _mark_catalog_diffs(pool, profile, model_ids, cache):
     """Mark accounts whose own catalog lacks models the representative just advertised."""
     if not model_ids:
         return
+    marked = []
     with pool._lock:
         for entry in pool._entries:
             identity, current = entry.get("account_key"), entry.get("profile")
@@ -1814,42 +1866,51 @@ def _mark_catalog_diffs(pool, profile, model_ids, cache):
             known = {item.get("id") for item in (cache.models(catalog_cache_key(profile, identity)) or [])}
             if known and not model_ids <= known:
                 entry["catalog_dirty"] = True
+                marked.append(entry["id"])
+    for cid in marked:  # Queue outside the lock so the wake-up can publish the model cache.
+        pool._queue_sync(cid)
+
+
+def _probe_profile_catalog(pool, ledger, refs, failed, cache, aggregate, profile):
+    """Probe at most one representative credential for this product profile."""
+    candidates = [{"entry": entry, "generation": generation, "headers": headers,
+                   "account_key": entry.get("account_key")}
+                  for entry, generation, headers, candidate_profile in list(refs.values())
+                  if candidate_profile == profile and entry.get("account_key")
+                  and model_policy.credential_enabled(CONFIG, entry)]
+    target = aggregate.choose(
+        profile, candidates, age_of=lambda candidate: cache.age(_account_catalog_key(profile, candidate["headers"])))
+    if target is None:
+        aggregate.fresh(profile)
+        return
+    entry, generation, headers = target["entry"], target["generation"], target["headers"]
+    key = _account_catalog_key(profile, headers)
+    perf_metrics.inc("catalog_fetch_count")
+    try:
+        models, serves = _fetch_catalog(headers)
+        if not _store_catalog(pool, cache, entry, generation, key, models, serves):
+            aggregate.failure(profile, source=entry.get("account_key"))
+            failed.add(entry["id"])
+            return
+        aggregate.success(profile, source=entry.get("account_key"), generation=generation,
+                          models=[item.get("id") for item in models])
+        _mark_catalog_diffs(pool, profile, {item.get("id") for item in models}, cache)
+        _log(f"[models] {profile} 代表账号目录已刷新: 选择器 {len(models)} 个，"
+             f"账号根表 {len(serves)} 个")
+    except Exception as error:
+        perf_metrics.inc("catalog_fetch_failures")
+        failed.add(entry["id"])
+        aggregate.failure(profile, source=entry.get("account_key"))
+        _sync_error(pool, ledger, entry, generation, "models", error)
 
 
 def _probe_profile_catalogs(pool, ledger, refs, failed, cache, aggregate):
-    """Probe at most one representative credential per product profile per cycle."""
-    for profile in PROFILE_ENDPOINTS:
-        if not aggregate.due(profile):
-            continue
-        candidates = [{"entry": entry, "generation": generation, "headers": headers,
-                       "account_key": entry.get("account_key")}
-                      for entry, generation, headers, candidate_profile in refs.values()
-                      if candidate_profile == profile and entry.get("account_key")
-                      and model_policy.credential_enabled(CONFIG, entry)]
-        target = aggregate.choose(
-            profile, candidates, age_of=lambda candidate: cache.age(_account_catalog_key(profile, candidate["headers"])))
-        if target is None:
-            aggregate.fresh(profile)
-            continue
-        entry, generation, headers = target["entry"], target["generation"], target["headers"]
-        key = _account_catalog_key(profile, headers)
-        perf_metrics.inc("catalog_fetch_count")
-        try:
-            models, serves = _fetch_catalog(headers)
-            if not _store_catalog(pool, cache, entry, generation, key, models, serves):
-                aggregate.failure(profile, source=entry.get("account_key"))
-                failed.add(entry["id"])
-                continue
-            aggregate.success(profile, source=entry.get("account_key"), generation=generation,
-                              models=[item.get("id") for item in models])
-            _mark_catalog_diffs(pool, profile, {item.get("id") for item in models}, cache)
-            _log(f"[models] {profile} 代表账号目录已刷新: 选择器 {len(models)} 个，"
-                 f"账号根表 {len(serves)} 个")
-        except Exception as error:
-            perf_metrics.inc("catalog_fetch_failures")
-            failed.add(entry["id"])
-            aggregate.failure(profile, source=entry.get("account_key"))
-            _sync_error(pool, ledger, entry, generation, "models", error)
+    """Probe one representative credential per due product profile, each on its own slot."""
+    due = [profile for profile in PROFILE_ENDPOINTS if aggregate.due(profile)]
+    if not due:
+        return
+    list(_bounded_map(lambda profile: _probe_profile_catalog(pool, ledger, refs, failed, cache, aggregate, profile),
+                      due, _housekeep_concurrency()))
 
 
 def _sync_model_catalogs(pool, ledger, refs, failed):
@@ -1865,6 +1926,7 @@ def _sync_model_catalogs(pool, ledger, refs, failed):
 
 
 CATALOG_SCAN_START_LOCK = threading.Lock()   # One user-triggered full scan at a time.
+CATALOG_SCAN_PROGRESS_LOCK = threading.Lock()  # Progress counters are shared by scan workers.
 CATALOG_SCAN_MAX_ROWS = 500                  # Bounded per-account progress payload.
 _SCAN_FIELDS = ("status", "total", "completed", "success", "failed", "differences",
                 "started_at", "finished_at", "accounts")
@@ -1906,31 +1968,39 @@ def _scan_one_catalog(pool, cache, entry):
             "differences": differences, "model_ids": [item.get("id") for item in models]}
 
 
+def _scan_one_account(pool, cache, scan, aggregate, entry):
+    """Refresh one account's catalog and fold its result into the shared progress record."""
+    row = {"name": Path(entry["id"]).name}
+    try:
+        if not model_policy.credential_enabled(CONFIG, entry):
+            row.update(status="skipped", reason="disabled")
+        else:
+            result = _scan_one_catalog(pool, cache, entry)
+            row.update(status="ok", **{key: value for key, value in result.items() if key != "model_ids"})
+            with CATALOG_SCAN_PROGRESS_LOCK:
+                scan["success"] += 1
+                scan["differences"] += result["differences"]
+            if aggregate is not None and entry.get("account_key"):
+                # A full scan satisfies this profile's TTL, so no probe follows immediately.
+                aggregate.success(result["profile"], source=entry["account_key"],
+                                  generation=entry.get("generation"), models=result["model_ids"])
+    except Exception as error:
+        perf_metrics.inc("catalog_fetch_failures")
+        row.update(status="failed", error=sanitize_log_text(_network_error_text(error), 120))
+        with CATALOG_SCAN_PROGRESS_LOCK:
+            scan["failed"] += 1
+    with CATALOG_SCAN_PROGRESS_LOCK:
+        scan["completed"] += 1
+        if len(scan["accounts"]) < CATALOG_SCAN_MAX_ROWS:
+            scan["accounts"].append(row)
+
+
 def _catalog_scan_worker(pool, cache, scan, entries):
-    """Scan every account serially, keeping each previous catalog when its refresh fails."""
+    """Scan every account with bounded workers, keeping each previous catalog when a refresh fails."""
     aggregate = CONFIG.get("aggregate_catalog")
     try:
-        for entry in entries:
-            row = {"name": Path(entry["id"]).name}
-            try:
-                if not model_policy.credential_enabled(CONFIG, entry):
-                    row.update(status="skipped", reason="disabled")
-                else:
-                    result = _scan_one_catalog(pool, cache, entry)
-                    row.update(status="ok", **{key: value for key, value in result.items() if key != "model_ids"})
-                    scan["success"] += 1
-                    scan["differences"] += result["differences"]
-                    if aggregate is not None and entry.get("account_key"):
-                        # A full scan satisfies this profile's TTL, so no probe follows immediately.
-                        aggregate.success(result["profile"], source=entry["account_key"],
-                                          generation=entry.get("generation"), models=result["model_ids"])
-            except Exception as error:
-                perf_metrics.inc("catalog_fetch_failures")
-                row.update(status="failed", error=sanitize_log_text(_network_error_text(error), 120))
-                scan["failed"] += 1
-            scan["completed"] += 1
-            if len(scan["accounts"]) < CATALOG_SCAN_MAX_ROWS:
-                scan["accounts"].append(row)
+        list(_bounded_map(lambda entry: _scan_one_account(pool, cache, scan, aggregate, entry),
+                          entries, _housekeep_concurrency()))
         _publish_model_cache()
         scan["status"] = "completed"
     except Exception as error:
@@ -1973,42 +2043,49 @@ def _sync_usage(pool, entries=None, expected_identity=None):
     previous_stale = set((CONFIG.get("usage_daily") or {}).get("stale_accounts", []))
     stale = {entry["id"] for entry in pool.entries()
              if entry["id"] not in target_ids and Path(entry["id"]).name in previous_stale}
-    for entry in targets:
-        if not model_policy.credential_enabled(CONFIG, entry):
-            continue
-        try:
-            cm = entry["cm"]
-            with cm._lock:
-                if expected_identity is not None and cm.summary().get("account_key") != expected_identity:
-                    stale.add(entry["id"])
-                    continue
-                headers = cm.get_headers()
-                generation = cm._generation
-            site = site_for_headers(headers)
-            usage = credits_mod.fetch_request_usage(_bearer_token(headers), uid=headers.get("X-User-Id", ""),
-                                                    domain=headers.get("X-Domain", ""))
-            def store():
-                accounts[entry["id"]] = {"identity": entry.get("account_key"), "site": site,
-                                         "by_day": usage["by_day"],
-                                         "total_credits": round(usage["total_credits"], 2),
-                                         "requests": usage["requests"],
-                                         "partial": bool(usage.get("partial")),
-                                         "fetched_at": time.time()}
-                snapshots = CONFIG.get("usage_snapshots")
-                if snapshots is not None and entry.get("account_key") and entry.get("uid"):
-                    # Only a validated identity may key durable state. An absent flag defaults to
-                    # False, but a present value is passed through raw so the store's own strict
-                    # validator governs: coercing it here with bool() would mask a malformed value
-                    # and persist it as a legitimate flag.
-                    snapshots.store(entry["id"], entry["account_key"], site, usage,
-                                    partial=usage.get("partial", False))
-            if not pool.apply_if_current(cm, generation, store):
-                stale.add(entry["id"])
-        except Exception as error:
-            stale.add(entry["id"])
-            _log(f"[usage] {Path(entry['id']).name} 明细拉取失败（保留其上次成功快照）: {_network_error_text(error)}")
+    list(_bounded_map(
+        lambda entry: _sync_one_usage(pool, entry, accounts, stale, expected_identity),
+        targets, _housekeep_concurrency()))
     _publish_usage_daily(pool, stale)
     return stale & target_ids
+
+
+def _sync_one_usage(pool, entry, accounts, stale, expected_identity=None):
+    """Refresh one account's usage snapshot on the usage endpoint semaphore."""
+    if not model_policy.credential_enabled(CONFIG, entry):
+        return
+    try:
+        cm = entry["cm"]
+        with cm._lock:
+            if expected_identity is not None and cm.summary().get("account_key") != expected_identity:
+                stale.add(entry["id"])
+                return
+            headers = cm.get_headers()
+            generation = cm._generation
+        site = site_for_headers(headers)
+        with _endpoint_semaphore("usage"):
+            usage = credits_mod.fetch_request_usage(_bearer_token(headers), uid=headers.get("X-User-Id", ""),
+                                                    domain=headers.get("X-Domain", ""))
+        def store():
+            accounts[entry["id"]] = {"identity": entry.get("account_key"), "site": site,
+                                     "by_day": usage["by_day"],
+                                     "total_credits": round(usage["total_credits"], 2),
+                                     "requests": usage["requests"],
+                                     "partial": bool(usage.get("partial")),
+                                     "fetched_at": time.time()}
+            snapshots = CONFIG.get("usage_snapshots")
+            if snapshots is not None and entry.get("account_key") and entry.get("uid"):
+                # Only a validated identity may key durable state. An absent flag defaults to
+                # False, but a present value is passed through raw so the store's own strict
+                # validator governs: coercing it here with bool() would mask a malformed value
+                # and persist it as a legitimate flag.
+                snapshots.store(entry["id"], entry["account_key"], site, usage,
+                                partial=usage.get("partial", False))
+        if not pool.apply_if_current(cm, generation, store):
+            stale.add(entry["id"])
+    except Exception as error:
+        stale.add(entry["id"])
+        _log(f"[usage] {Path(entry['id']).name} 明细拉取失败（保留其上次成功快照）: {_network_error_text(error)}")
 
 
 def _usage_row_expired(snap) -> bool:
@@ -2147,10 +2224,11 @@ def _housekeep_once(pool: CredentialPool, ledger, *, pending_only=False):
         failed = set()
         try:
             refs = {}
-            for entry in pool.entries():
-                if entry["id"] not in ids:
-                    continue
-                result = _sync_credits(pool, ledger, entry, checkin=not pending_only, failed=failed)
+            targets = [entry for entry in pool.entries() if entry["id"] in ids]
+            results = _bounded_map(
+                lambda entry: _sync_account(pool, ledger, entry, checkin=not pending_only, failed=failed),
+                targets, _housekeep_concurrency())
+            for entry, result in zip(targets, results):
                 if result is not None:
                     refs[entry["id"]] = result
             _sync_model_catalogs(pool, ledger, refs, failed)
@@ -2161,6 +2239,12 @@ def _housekeep_once(pool: CredentialPool, ledger, *, pending_only=False):
             raise
         finally:
             pool.end_sync(ids, failed)
+
+
+def _sync_account(pool, ledger, entry, *, checkin, failed):
+    """One account's balance work, bounded by the credits endpoint semaphore."""
+    with _endpoint_semaphore("credits"):
+        return _sync_credits(pool, ledger, entry, checkin=checkin, failed=failed)
 
 
 LEASE_INTERVAL_S = 30  # Running-instance heartbeat; offline tools treat older leases as stale.
@@ -2270,6 +2354,7 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "model_guard": True,     # Reject models absent from authorized catalogs
                 "routing_scheduler": "indexed",  # legacy | shadow | indexed eligibility shards
                 "catalog_probe_mode": "representative",  # account | representative catalog refresh
+                "housekeep_concurrency": 4,  # Bounded maintenance workers; 1 restores serial behaviour
                 "max_images": 16, "image_policy": "truncate",
                 "max_request_bytes": 32 * 1024 * 1024, "log_body_limit": 65536,
                 "max_inbound_bytes": 64 * 1024 * 1024,
@@ -2831,9 +2916,10 @@ _catalog_revision = 0
 
 
 def invalidate_model_table() -> None:
-    """Invalidate the public model snapshot after catalog changes."""
+    """Drop the public model snapshot and derived catalog index after catalog changes."""
     global _model_table_cache
     _model_table_cache = {}
+    CONFIG["catalog_index"] = None  # Rebuilt from the live accounts on the next catalog read.
 
 
 def _identity_enabled(identity) -> bool:
@@ -3050,13 +3136,25 @@ def _profile_has_credits(profile: str) -> bool:
                for entry in pool.entries() if model_policy.credential_enabled(CONFIG, entry))
 
 
+def _legacy_catalog_signature() -> tuple:
+    """Cheap signature of legacy CONFIG catalogs, which are only ever replaced wholesale."""
+    catalogs = CONFIG.get("model_catalogs")
+    rows = (tuple(sorted((str(name), len(items or ())) for name, items in catalogs.items()))
+            if isinstance(catalogs, dict) else ())
+    remote, intl = CONFIG.get("models_remote"), CONFIG.get("models_intl")
+    return (rows,
+            id(remote) if isinstance(remote, list) else None, len(remote) if isinstance(remote, list) else 0,
+            id(intl) if isinstance(intl, list) else None, len(intl) if isinstance(intl, list) else 0)
+
+
 def _model_table_revisions() -> tuple:
     """Return the revisions that a published model table depends on."""
     pool = CONFIG.get("cred_pool")
     ledger = CONFIG.get("ledger")
     index = CONFIG.get("catalog_index")
     return (getattr(pool, "revision", 0), model_policy.revision(CONFIG),
-            getattr(index, "revision", 0), getattr(ledger, "revision", 0))
+            getattr(index, "revision", 0), getattr(ledger, "revision", 0),
+            _legacy_catalog_signature())
 
 
 def _model_table(name, region, build):

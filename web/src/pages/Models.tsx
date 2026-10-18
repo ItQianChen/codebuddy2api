@@ -617,7 +617,8 @@ export function Models() {
             : scan.status === "completed"
               ? "已完成"
               : "失败"}
-          ：成功 {scan.success} · 失败 {scan.failed} · 目录差异 {scan.differences}；失败账号保留上次成功的目录。
+          ：成功 {scan.success} · 失败 {scan.failed} · 目录差异 {scan.differences}
+          ；失败账号保留上次成功的目录。
         </p>
       )}
       <Panel
