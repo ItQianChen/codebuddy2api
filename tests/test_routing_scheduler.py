@@ -248,6 +248,39 @@ class SchedulerPoolTests(unittest.TestCase):
                                                "segments": [{"remaining": 99, "expires_at": time.time() + 60}]})
         self.assertEqual(pool._shard_revisions(), revision)  # Positive-to-positive is not a flip.
 
+    def test_intl_first_balance_row_moves_routing_revision(self):
+        ledger = CreditLedger(self.root / "intl-ledger.json")
+        ledger.bind_identity("intl-cred", "intl-key")
+        before = ledger.routing_revision
+        ledger.update_credits("intl-cred", {"credits": 5, "intl": True, "segments": []})
+        self.assertNotEqual(ledger.routing_revision, before)
+        churn = ledger.routing_revision
+        ledger.update_credits("intl-cred", {"credits": 4, "intl": True, "segments": []})
+        self.assertEqual(ledger.routing_revision, churn)
+
+    def test_token_rotation_keeps_catalog_clean_and_shard_hot(self):
+        pool, _ = self.build(4)
+        pool.pick("session", "glm-5.3-flash")
+        revision = pool._shard_revisions()
+        live = pool.entry_by_id(pool.entries()[0]["id"])
+        live["catalog_dirty"] = False
+        Path(live["id"]).write_text(json.dumps({"account": {"uid": "shard-0"}, "auth": {
+            "accessToken": "token-0-rotated", "domain": DOMAINS[live["profile"]],
+            "expiresAt": (time.time() + 7200) * 1000}}), encoding="utf-8")
+        pool.reload([Path(live["id"])], reset=False)
+        self.assertFalse(pool.entry_by_id(live["id"])["catalog_dirty"])
+        self.assertEqual(pool._shard_revisions(), revision)
+
+    def test_stale_generation_account_stays_pickable_until_reconcile(self):
+        pool, _ = self.build(4)
+        live = pool.entry_by_id(pool.entries()[0]["id"])
+        others = tuple(entry["cm"] for entry in pool.entries()[1:])
+        self.assertIs(pool.pick("fresh", "glm-5.3-flash", tried=others), live["cm"])
+        live["cm"].invalidate()  # The bind is stale, but headers_for rechecks before sending.
+        self.assertIs(pool.pick("stale", "glm-5.3-flash", tried=others), live["cm"])
+        pool.reload([Path(live["id"])], reset=False)
+        self.assertEqual(pool.entry_by_id(live["id"])["generation"], live["cm"]._generation)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

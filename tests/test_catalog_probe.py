@@ -179,6 +179,36 @@ class CatalogProbeTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)  # Only the probe ran; no account re-fetch.
         self.assertFalse(any(entry.get("catalog_dirty") for entry in pool.entries()))
 
+    def test_laggard_pass_survives_a_broken_account(self):
+        pool, ledger, cache, aggregate = self.build(3)
+        entries = pool.entries()
+        aggregate.success("cn-cli", source="seeded", generation=1, models=["hy3"])  # Probe not due.
+        broken = pool.entry_by_id(entries[0]["id"])
+        failed = set()
+        refs = self.refs(pool)
+        with patch.object(broken["cm"], "get_headers", side_effect=RuntimeError("synthetic refresh")), \
+             patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=self.scopes("hy3")):
+            converter._sync_model_catalogs(pool, ledger, refs, failed)
+        self.assertIn(broken["id"], failed)
+        self.assertEqual(len(self.calls), 2)  # The two healthy accounts still back-filled.
+        for entry in entries[1:]:
+            self.assertTrue(cache.models(converter.catalog_cache_key("cn-cli", entry["account_key"])))
+        # The publish still ran despite the broken account.
+        self.assertIn(entries[1]["account_key"], converter.CONFIG["account_catalogs"])
+
+    def test_laggard_pass_skips_accounts_in_cooldown(self):
+        pool, ledger, cache, aggregate = self.build(2)
+        entries = pool.entries()
+        aggregate.success("cn-cli", source="seeded", generation=1, models=["hy3"])
+        refs = self.refs(pool)  # Built before the cooldown so no headers are touched.
+        cooling = pool.entry_by_id(entries[0]["id"])
+        cooling["fail_until"] = time.time() + 300
+        with patch.object(cooling["cm"], "get_headers", side_effect=RuntimeError("must not be called")), \
+             patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=self.scopes("hy3")):
+            converter._sync_model_catalogs(pool, ledger, refs, set())
+        self.assertEqual(cache.models(converter.catalog_cache_key("cn-cli", cooling["account_key"])), [])
+        self.assertEqual(len(self.calls), 1)
+
     def test_probe_failure_keeps_other_catalogs_and_backs_off(self):
         pool, ledger, cache, aggregate = self.build(2)
         entries = pool.entries()

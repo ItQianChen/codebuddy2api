@@ -901,7 +901,9 @@ class CreditLedger:
 
     def update_credits(self, cred_id: str, result: dict):
         with self._lock:
+            # Snapshot before mutating: _entry may hand back the very row read here.
             was_solvent = _solvent_row(self._data["creds"].get(cred_id))
+            had_balance_row = bool((self._data["creds"].get(cred_id) or {}).get("credits"))
             e = self._entry(cred_id)
             e["credits"] = {
                 "credits": result.get("credits"),
@@ -917,7 +919,9 @@ class CreditLedger:
                 "unlimited": bool(result.get("unlimited")) and bool(result.get("enterprise")),
             }
             e["error"] = None
-            if _solvent_row({"credits": e["credits"]}) != was_solvent:
+            # A first balance row changes eligibility too: an absent row never matched
+            # _has_credit for intl accounts, so its appearance must move the routing revision.
+            if not had_balance_row or _solvent_row({"credits": e["credits"]}) != was_solvent:
                 self.routing_revision = next(_LEDGER_REVISION)
             self._save()
 

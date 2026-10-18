@@ -526,6 +526,11 @@ export function Models() {
   useEffect(() => {
     loadScan(); // An in-progress scan survives page reloads.
   }, [loadScan]);
+  useEffect(() => {
+    if (scan?.status !== "running") return;
+    const timer = setInterval(loadScan, 2000);
+    return () => clearInterval(timer);
+  }, [scan?.status, loadScan]);
   const scanError = scan?.status === "failed" ? scan.error : null;
   const scanVersions = scan
     ? Object.entries(scan.profiles)

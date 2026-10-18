@@ -118,6 +118,17 @@ class EnvironmentConfigTests(unittest.TestCase):
             with self.subTest(env=env), self.assertRaises(SystemExit):
                 self.start(env)
 
+    def test_rollout_switches_default_to_conservative_modes(self):
+        _, items, config = self.start()
+        self.assertEqual(config['routing_scheduler'], 'shadow')
+        self.assertEqual(config['catalog_probe_mode'], 'account')
+        self.assertEqual(items['routing_scheduler']['source'], 'default')
+        self.assertEqual(items['catalog_probe_mode']['source'], 'default')
+        _, _, explicit = self.start(cli=('--routing-scheduler', 'indexed',
+                                         '--catalog-probe-mode', 'representative'))
+        self.assertEqual(explicit['routing_scheduler'], 'indexed')
+        self.assertEqual(explicit['catalog_probe_mode'], 'representative')
+
 
     def test_capability_guard_defaults_precedence_and_validation(self):
         _, items, config = self.start()

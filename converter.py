@@ -642,6 +642,7 @@ class CredentialPool:
                     changed = reset or generation != entry.get("generation")
                     if changed:
                         old_identity = entry.get("account_key")
+                        old_profile = entry.get("profile")
                         replaced = old_identity != identity
                         if replaced:
                             self._model_fail = {key: until for key, until in self._model_fail.items() if key[0] != cid}
@@ -650,9 +651,13 @@ class CredentialPool:
                             self.forget_credential_state(entry)
                         if entry.get("uid"):
                             have_uids.pop(old_identity, None)
+                        # A same-account background token refresh does not change catalog
+                        # entitlements, so only an explicit reload, a replacement or a product
+                        # move re-queues the catalog fetch.
                         entry.update(uid=summary.get("uid"), profile=summary["profile"], site=summary["site"],
                                      enterprise=summary.get("enterprise") is True,
-                                     account_key=identity, generation=generation, catalog_dirty=True)
+                                     account_key=identity, generation=generation,
+                                     catalog_dirty=bool(reset or replaced or old_profile != summary["profile"]))
                         self._bind_entry(entry)
                         if reset or replaced:
                             entry.update(fail_until=0.0, keepalive_after=0.0)
@@ -1111,10 +1116,6 @@ class CredentialPool:
         if profile not in _model_profiles(model, region, configured, policy=policy):
             return False
         if CONFIG.get("account_catalogs") is not None or CONFIG.get("model_cache") is not None:
-            # A changed file invalidates this account until it is re-read; headers_for reloads and
-            # rechecks the selected credential before any request is sent with it.
-            if entry["generation"] != entry["cm"]._generation:
-                return False
             account = (CONFIG.get("account_catalogs") or {}).get(entry.get("account_key")) or {}
             models = _effective_account_scope(account, "serves", model_id=_upstream_model(model, profile))
             if account.get("profile") != profile or models is None:
@@ -1830,7 +1831,7 @@ def _publish_model_cache():
                 CONFIG["model_catalogs"] = catalogs
                 CONFIG["models_remote"], CONFIG["models_intl"] = catalogs["cn-cli"], catalogs["intl-cli"]
                 _publish_catalog_index(accounts)
-    invalidate_model_table()
+                invalidate_model_table()
 
 
 def _account_catalog_key(profile, headers):
@@ -1923,7 +1924,8 @@ def _refresh_laggard_catalogs(pool, ledger, failed, cache):
     with pool._lock:
         for entry in pool._entries:
             if (not entry.get("account_key") or entry.get("profile") is None
-                    or not model_policy.credential_enabled(CONFIG, entry)):
+                    or not model_policy.credential_enabled(CONFIG, entry)
+                    or not pool._healthy(entry)):
                 continue
             known = cache.age(catalog_cache_key(entry["profile"], entry["account_key"])) is not None
             if not known:
@@ -1937,12 +1939,17 @@ def _refresh_laggard_catalogs(pool, ledger, failed, cache):
     refs = {}
     for entry in backlog[:cap]:
         cm = entry["cm"]
-        with cm._lock:
-            refs[entry["id"]] = (entry, cm._generation, cm.get_headers(), entry["profile"])
-    results = _bounded_map(
+        try:
+            # One broken account must not abort the pass before the model cache is published.
+            with cm._lock:
+                refs[entry["id"]] = (entry, cm._generation, cm.get_headers(), entry["profile"])
+        except Exception as error:
+            failed.add(entry["id"])
+            _sync_error(pool, ledger, entry, entry.get("generation"), "models", error)
+    results = list(_bounded_map(
         lambda ref: _sync_one_account_catalog(pool, ledger, *ref, failed=failed, cache=cache),
-        list(refs.values()), _housekeep_concurrency())
-    if any(results) and len(backlog) > cap:
+        list(refs.values()), _housekeep_concurrency()))
+    if any(result for result in results) and len(backlog) > cap:
         # Only real progress re-wakes the loop; failures fall back to the hourly cycle.
         pool._sync_event.set()
 
@@ -2678,6 +2685,11 @@ def _store_credential(directory: Path, name: str, content: bytes, uid: str, *, r
                 target = atomic_write_credential(directory, name, content)
                 if pool is not None:
                     pool.reload([target])
+                    # Imports and logins always re-verify the catalog, matching relogin semantics.
+                    entry = pool.entry_by_id(str(target))
+                    if entry is not None:
+                        entry["catalog_dirty"] = True
+                        pool._queue_sync(str(target))
                 elif cm is not None:
                     cm.invalidate()
     return target
@@ -5080,11 +5092,11 @@ def main():
                     default=os.environ.get("CODEBUDDY2API_STREAM_MODE", "compatible"),
                     help="流式传输：compatible 保持兼容聚合策略，realtime 增量发送且不重生成工具参数；默认 compatible")
     ap.add_argument("--catalog-probe-mode", choices=("account", "representative"),
-                    default=os.environ.get("CODEBUDDY2API_CATALOG_PROBE_MODE", "representative"),
-                    help="目录探测：representative 每个产品每周期只探测一个代表账号（默认）；account 逐个账号刷新")
+                    default=os.environ.get("CODEBUDDY2API_CATALOG_PROBE_MODE", "account"),
+                    help="目录探测：account 逐个账号刷新（默认）；representative 每个产品每周期只探测一个代表账号并补齐缺目录账号")
     ap.add_argument("--routing-scheduler", choices=("legacy", "shadow", "indexed"),
-                    default=os.environ.get("CODEBUDDY2API_ROUTING_SCHEDULER", "indexed"),
-                    help="路由调度：indexed 复用按模型分片（默认）；shadow 记录新旧差异并仍返回旧结果；legacy 每次全量判断")
+                    default=os.environ.get("CODEBUDDY2API_ROUTING_SCHEDULER", "shadow"),
+                    help="路由调度：shadow 记录新旧差异并仍返回旧结果（默认，差异为零后可切 indexed）；indexed 复用按模型分片；legacy 每次全量判断")
     ap.add_argument("--model-capability-guard", type=_boolean_arg, nargs="?", const=True,
                     default=os.environ.get("CODEBUDDY2API_MODEL_CAPABILITY_GUARD", "true"),
                     help="按账号模型声明预检图片、工具、思考和输出上限；false 仅关闭新增能力预检")
