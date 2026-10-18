@@ -77,6 +77,7 @@ from app.admin_auth import SessionStoreError
 from app.content_filter import ContentFilterDetector, is_filter_error
 from app.request_limits import ImageLimitError, apply_image_policy
 from app.safe_logging import format_log_body, sanitize_log_text
+from app import perf_metrics
 from app.startup import allows_open_noauth, load_startup_env, run_server
 from app.site_routing import (DOMESTIC, INTERNATIONAL, PROFILE_ENDPOINTS, site_for_auth, site_for_headers,
                               profile_for_auth, profile_for_headers, profile_region, profile_product,
@@ -287,6 +288,7 @@ class CredentialManager:
             return json.load(f)
 
     def _file_version(self):
+        perf_metrics.inc("credential_stat_calls")
         st = self.path.stat()
         return st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size
 
@@ -390,6 +392,7 @@ class CredentialManager:
 
 
     def summary(self) -> dict:
+        perf_metrics.inc("credential_summary_calls")
         with self._lock:
             s = self._session()
             auth = s.get("auth") or {}
@@ -1088,6 +1091,7 @@ class CredentialPool:
 
     def _candidates(self, model: str | None, *, region=None, tried=()) -> list[dict]:
         """Exclude tried credentials and rank candidates by zero rate and credit expiry."""
+        perf_metrics.inc("candidate_checks", len(self._entries))
         tried = set(tried)
         healthy = [entry for entry in self._entries if entry["cm"] not in tried
                    and self._healthy(entry)
@@ -1114,7 +1118,11 @@ class CredentialPool:
              tried=(), with_capacity=False, requirements=None) -> CredentialManager | None:
         """Select a healthy sticky or round-robin credential, preferring eligible zero-rate accounts."""
         self._rescan()  # Reload and prune acquire their own locks.
-        with self._lock:
+        started = time.perf_counter()
+        waiting = time.perf_counter()
+        self._lock.acquire()
+        perf_metrics.observe("pool_lock_wait", time.perf_counter() - waiting)
+        try:
             self._evict_sticky()
             candidates = self._candidates(model, region=region, tried=tried)
             if not candidates:
@@ -1135,6 +1143,7 @@ class CredentialPool:
                 candidates = [entry for entry in candidates if self._model_free(entry, model) == free
                               and self._capacity.count(self._capacity_key(entry)) < limit]
                 if not candidates:
+                    perf_metrics.inc("capacity_acquire_failures")
                     raise self._capacity_error()
             best = candidates[0]
             free = self._model_free(best, model)
@@ -1152,6 +1161,9 @@ class CredentialPool:
             if skey:
                 self._sticky[skey] = (e["id"], time.time())
             return e["cm"]
+        finally:
+            self._lock.release()
+            perf_metrics.observe("route_pick_duration", time.perf_counter() - started)
 
     def headers_for(self, skey: str | None, model: str | None = None, *, region=None,
                     with_generation=False, tried=(), with_capacity=False, requirements=None):
@@ -1187,6 +1199,7 @@ class CredentialPool:
                         lease = self._capacity.acquire(self._capacity_key(entry),
                             CONFIG.get("max_inflight_per_account", 0), cm, generation)
                         if lease is None:
+                            perf_metrics.inc("capacity_acquire_failures")
                             capacity_race = True
                             continue
                         return lease, headers
@@ -1655,6 +1668,7 @@ def _sync_model_catalogs(pool, ledger, refs, failed):
         key = catalog_cache_key(profile, identity)
         if cache.fresh(key) and not entry.get("catalog_dirty"):
             continue
+        perf_metrics.inc("catalog_fetch_count")
         try:
             scopes = credits_mod.fetch_model_scopes(
                 _bearer_token(headers), domain=headers.get("X-Domain", ""),
@@ -1671,6 +1685,7 @@ def _sync_model_catalogs(pool, ledger, refs, failed):
             else:
                 failed.add(entry["id"])
         except Exception as error:
+            perf_metrics.inc("catalog_fetch_failures")
             failed.add(entry["id"])
             _sync_error(pool, ledger, entry, generation, "models", error)
     _publish_model_cache()

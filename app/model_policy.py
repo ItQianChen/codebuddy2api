@@ -3,7 +3,7 @@ from contextvars import ContextVar
 
 from fastapi import HTTPException
 
-from app import travel
+from app import perf_metrics, travel
 from app.model_capabilities import route_metadata
 _request_policy = ContextVar("gateway_model_policy", default=None)
 
@@ -24,7 +24,9 @@ class PolicyScopeMiddleware:
 
 def snapshot(config):
     store = config.get("control_store")
-    return store.snapshot() if store is not None else {"models": {}, "credentials": {}, "revision": 0}
+    if store is None:
+        return {"models": {}, "credentials": {}, "revision": 0}
+    return store.snapshot()
 
 
 def credential_enabled(config, entry):

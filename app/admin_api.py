@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, Response
 
 from . import auth_oauth
+from . import perf_metrics
 from .admin_auth import AdminAuth, AdminMiddleware, COOKIE_NAME, SESSION_TTL, error_response, same_origin
 from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
@@ -686,5 +687,10 @@ def install_admin(app, config, gateway):
             return result
         result = await run_in_threadpool(build_dashboard)
         return result if isinstance(result, Response) else JSONResponse(result)
+
+    @route("GET", "/admin/performance")
+    async def performance_get(request):
+        """Read-only process counters; no routing state is exposed or mutated."""
+        return JSONResponse(perf_metrics.snapshot())
 
     return auth
