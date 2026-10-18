@@ -652,12 +652,13 @@ class CredentialPool:
                         if entry.get("uid"):
                             have_uids.pop(old_identity, None)
                         # A same-account background token refresh does not change catalog
-                        # entitlements, so only an explicit reload, a replacement or a product
-                        # move re-queues the catalog fetch.
+                        # entitlements, but it must also not clear a pending refresh marker
+                        # set by an import or a representative probe; only _store_catalog does.
                         entry.update(uid=summary.get("uid"), profile=summary["profile"], site=summary["site"],
                                      enterprise=summary.get("enterprise") is True,
                                      account_key=identity, generation=generation,
-                                     catalog_dirty=bool(reset or replaced or old_profile != summary["profile"]))
+                                     catalog_dirty=bool(entry.get("catalog_dirty") or reset or replaced
+                                                       or old_profile != summary["profile"]))
                         self._bind_entry(entry)
                         if reset or replaced:
                             entry.update(fail_until=0.0, keepalive_after=0.0)

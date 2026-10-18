@@ -271,6 +271,16 @@ class SchedulerPoolTests(unittest.TestCase):
         self.assertFalse(pool.entry_by_id(live["id"])["catalog_dirty"])
         self.assertEqual(pool._shard_revisions(), revision)
 
+    def test_background_reload_keeps_a_pending_catalog_refresh_marker(self):
+        pool, _ = self.build(4)
+        live = pool.entry_by_id(pool.entries()[0]["id"])
+        live["catalog_dirty"] = True  # Marked by an import or a representative probe.
+        Path(live["id"]).write_text(json.dumps({"account": {"uid": "shard-0"}, "auth": {
+            "accessToken": "token-0-rotated", "domain": DOMAINS[live["profile"]],
+            "expiresAt": (time.time() + 7200) * 1000}}), encoding="utf-8")
+        pool.reload([Path(live["id"])], reset=False)  # A token refresh races the sync.
+        self.assertTrue(pool.entry_by_id(live["id"])["catalog_dirty"])
+
     def test_stale_generation_account_stays_pickable_until_reconcile(self):
         pool, _ = self.build(4)
         live = pool.entry_by_id(pool.entries()[0]["id"])
