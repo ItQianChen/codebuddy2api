@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -72,6 +73,8 @@ from app import model_capabilities
 from app.message_normalization import merge_intl_user_images
 from app.adapters.chat_input import normalize_chat_messages
 from app.model_catalog_view import INTERNATIONAL as SHARED_INTL_PROFILES, share_models
+from app.catalog_index import CatalogIndex
+from app.catalog_index import account_scope as _account_scope
 from app.inference_auth import require_api_key
 from app.admin_auth import SessionStoreError
 from app.content_filter import ContentFilterDetector, is_filter_error
@@ -546,6 +549,10 @@ def _dynamic_request_headers(skey: str | None) -> dict:
     }
 
 
+# Globally unique revisions keep cached policy views and model tables from matching a rebuilt pool.
+_POOL_REVISION = itertools.count(1)
+
+
 class CredentialPool:
     """Manage credential discovery, reloads, sticky sessions, cooldowns and refresh."""
 
@@ -568,6 +575,7 @@ class CredentialPool:
         self._index_id: dict[str, dict] = {}
         self._index_cm: dict = {}
         self._index_identity: dict[str, list[dict]] = {}
+        self.revision = next(_POOL_REVISION)   # Bumped whenever the entry list is rebuilt.
         # Explicit paths must survive rejection or eviction so a repaired file re-enters.
         self._configured: list[str] = []
         self._ignored_duplicates: set[str] = set()
@@ -679,6 +687,7 @@ class CredentialPool:
 
     def _rebuild_index(self):
         """Rebuild request-side lookups after the entry list changed; never called per request."""
+        self.revision = next(_POOL_REVISION)
         self._index_id = {entry["id"]: entry for entry in self._entries}
         self._index_cm = {entry["cm"]: entry for entry in self._entries}
         identity: dict[str, list[dict]] = {}
@@ -1006,8 +1015,8 @@ class CredentialPool:
             self._rescan()
         return current
 
-    def _healthy(self, e: dict) -> bool:
-        return model_policy.credential_enabled(CONFIG, e) and time.time() >= e["fail_until"]
+    def _healthy(self, e: dict, policy=None) -> bool:
+        return model_policy.credential_enabled(CONFIG, e, policy) and time.time() >= e["fail_until"]
 
     @staticmethod
     def _entry_profile(entry):
@@ -1052,25 +1061,22 @@ class CredentialPool:
         except (TypeError, ValueError):
             return False
 
-    def _eligible(self, entry, model, *, region=None, profile=None, rule=None):
-        if not model_policy.route_allowed(CONFIG, entry, model, rule=rule):
+    def _eligible(self, entry, model, *, region=None, profile=None, rule=None, policy=None):
+        if not model_policy.route_allowed(CONFIG, entry, model, rule=rule, policy=policy):
             return False
         actual = self._entry_profile(entry)
         profile = profile or actual
         if not profile or profile != actual or not _in_region(profile, region):
             return False
-        configured = {candidate for item in self._entries if (candidate := self._entry_profile(item))
-                      and _in_region(candidate, region)}
-        if profile not in _model_profiles(model, region, configured):
+        configured = _configured_profiles(region, policy)
+        if profile not in _model_profiles(model, region, configured, policy=policy):
             return False
         if CONFIG.get("account_catalogs") is not None or CONFIG.get("model_cache") is not None:
-            try:
-                identity = entry["cm"].summary()["account_key"]
-            except Exception:
+            # A changed file invalidates this account until it is re-read; headers_for reloads and
+            # rechecks the selected credential before any request is sent with it.
+            if entry["generation"] != entry["cm"]._generation:
                 return False
-            if identity != entry.get("account_key"):
-                return False
-            account = (CONFIG.get("account_catalogs") or {}).get(identity) or {}
+            account = (CONFIG.get("account_catalogs") or {}).get(entry.get("account_key")) or {}
             models = _effective_account_scope(account, "serves", model_id=_upstream_model(model, profile))
             if account.get("profile") != profile or models is None:
                 return False
@@ -1079,7 +1085,7 @@ class CredentialPool:
             cli_auto = model == "auto" and profile == "cn-cli" and bool(usable)
             # Disabling the guard must not borrow another account's model capabilities.
             declared = any(item["id"] == _upstream_model(model, profile)
-                           for item in _models_for_profile(profile, configured, scope="serves"))
+                           for item in _models_for_profile(profile, configured, scope="serves", policy=policy))
             passthrough = (model != "auto" and not declared and not CONFIG.get("model_guard")
                            and len(configured) == 1)
             if model and not (supported or cli_auto or passthrough):
@@ -1143,13 +1149,14 @@ class CredentialPool:
             else:
                 break
 
-    def _candidates(self, model: str | None, *, region=None, tried=()) -> list[dict]:
+    def _candidates(self, model: str | None, *, region=None, tried=(), policy=None) -> list[dict]:
         """Exclude tried credentials and rank candidates by zero rate and credit expiry."""
         perf_metrics.inc("candidate_checks", len(self._entries))
         tried = set(tried)
         healthy = [entry for entry in self._entries if entry["cm"] not in tried
-                   and self._healthy(entry)
-                   and self._eligible(entry, model, region=region) and self._model_healthy(entry, model)
+                   and self._healthy(entry, policy)
+                   and self._eligible(entry, model, region=region, policy=policy)
+                   and self._model_healthy(entry, model)
                    and self._model_servable(entry, model)]
         if not healthy:
             return []
@@ -1169,16 +1176,17 @@ class CredentialPool:
 
 
     def pick(self, skey: str | None, model: str | None = None, *, region=None,
-             tried=(), with_capacity=False, requirements=None) -> CredentialManager | None:
+             tried=(), with_capacity=False, requirements=None, policy=None) -> CredentialManager | None:
         """Select a healthy sticky or round-robin credential, preferring eligible zero-rate accounts."""
         # The candidate list comes from the indexes; file changes are applied by background reconcile.
+        policy = policy or model_policy.view(CONFIG)  # One policy revision for the whole decision.
         started = time.perf_counter()
         waiting = time.perf_counter()
         self._lock.acquire()
         perf_metrics.observe("pool_lock_wait", time.perf_counter() - waiting)
         try:
             self._evict_sticky()
-            candidates = self._candidates(model, region=region, tried=tried)
+            candidates = self._candidates(model, region=region, tried=tried, policy=policy)
             if not candidates:
                 if skey:
                     self._sticky.pop(skey, None)
@@ -1220,12 +1228,14 @@ class CredentialPool:
             perf_metrics.observe("route_pick_duration", time.perf_counter() - started)
 
     def headers_for(self, skey: str | None, model: str | None = None, *, region=None,
-                    with_generation=False, tried=(), with_capacity=False, requirements=None):
+                    with_generation=False, tried=(), with_capacity=False, requirements=None, policy=None):
         """Recheck identity and atomically reserve account capacity before sending."""
+        policy = policy or model_policy.view(CONFIG)
         capacity_race = False
         capability_failures = []
         for _ in range(max(1, len(self._entries))):
-            cm = self.pick(skey, model, region=region, tried=tried, with_capacity=with_capacity, requirements=requirements)
+            cm = self.pick(skey, model, region=region, tried=tried, with_capacity=with_capacity,
+                           requirements=requirements, policy=policy)
             if cm is None:
                 return None
             reason = None
@@ -1244,8 +1254,9 @@ class CredentialPool:
                 if entry is not None and cm._generation != entry.get("generation"):
                     self.reload([cm.path], reset=False)  # Ownership changed on disk: re-read one file.
                     entry = self._index_cm.get(cm)
-                if (entry is not None and cm._generation == generation and self._healthy(entry)
-                        and self._eligible(entry, model, region=region, profile=profile) and self._model_healthy(entry, model)):
+                if (entry is not None and cm._generation == generation and self._healthy(entry, policy)
+                        and self._eligible(entry, model, region=region, profile=profile, policy=policy)
+                        and self._model_healthy(entry, model)):
                     if requirements is not None:
                         failures = requirements.violations(model_capabilities.entry_model(sys.modules[__name__], entry, model))
                         if failures:
@@ -1726,6 +1737,7 @@ def _publish_model_cache():
                     models.extend(account["models"])
             CONFIG["model_catalogs"] = catalogs
             CONFIG["models_remote"], CONFIG["models_intl"] = catalogs["cn-cli"], catalogs["intl-cli"]
+            _publish_catalog_index(accounts)
     invalidate_model_table()
 
 
@@ -2624,6 +2636,8 @@ def billing_usage(start_date: Optional[str] = None, end_date: Optional[str] = No
 # Prefer cloud catalogs over static fallback models.
 _MODEL_TABLE_TTL = 60.0   # Model snapshot lifetime in seconds
 _model_table_cache: dict = {}
+_configured_cache: dict = {}   # (region, pool revision, policy revision) -> enabled profiles
+_catalog_revision = 0
 
 
 def invalidate_model_table() -> None:
@@ -2632,10 +2646,45 @@ def invalidate_model_table() -> None:
     _model_table_cache = {}
 
 
+def _identity_enabled(identity) -> bool:
+    """Whether a published account identity still has an enabled credential."""
+    pool = CONFIG.get("cred_pool")
+    entries = pool.entries_by_identity(identity) if pool is not None else ()
+    if not entries:
+        return True
+    return any(model_policy.credential_enabled(CONFIG, entry) for entry in entries)
+
+
+def _publish_catalog_index(accounts):
+    """Build the read-only catalog index once per publish, never per request."""
+    global _catalog_revision
+    _catalog_revision += 1
+    index = CatalogIndex(accounts, revision=_catalog_revision,
+                         policy_revision=model_policy.revision(CONFIG),
+                         is_enabled=_identity_enabled)
+    CONFIG["catalog_index"] = index
+    return index
+
+
+def _catalog_index():
+    """Return the catalog index matching the published accounts and policy revision."""
+    accounts = CONFIG.get("account_catalogs")
+    if accounts is None:
+        return None
+    index = CONFIG.get("catalog_index")
+    if (index is not None and index.accounts is accounts
+            and index.policy_revision == model_policy.revision(CONFIG)):
+        return index
+    return _publish_catalog_index(accounts)
+
+
 def _catalog_for(profile: str, scope: str = "models", *, model_id=None):
     """Return a profile catalog within the requested account scope."""
     accounts = CONFIG.get("account_catalogs")
     if accounts is not None or CONFIG.get("model_cache") is not None:
+        index = _catalog_index()
+        if index is not None:
+            return index.catalog(profile, scope, model_id=model_id)
         pool = CONFIG.get("cred_pool")
         models = None
         for entry in pool.entries() if pool is not None else []:
@@ -2659,11 +2708,20 @@ def _in_region(profile: str, region: str | None) -> bool:
     return region is None or profile_region(profile) == region
 
 
-def _configured_profiles(region: str | None) -> set[str]:
+def _configured_profiles(region: str | None, policy=None) -> set[str]:
+    """Return enabled profiles in a region, cached until the pool or policy revision moves."""
     pool = CONFIG.get("cred_pool")
     if pool is not None:
-        return {profile for entry in pool.entries() if (profile := pool._entry_profile(entry))
-                and model_policy.credential_enabled(CONFIG, entry) and _in_region(profile, region)}
+        key = (region, getattr(pool, "revision", 0), model_policy.revision(CONFIG, policy))
+        cached = _configured_cache.get(key)
+        if cached is not None:
+            return cached
+        profiles = frozenset(profile for entry in pool.entries() if (profile := pool._entry_profile(entry))
+                             and model_policy.credential_enabled(CONFIG, entry, policy)
+                             and _in_region(profile, region))
+        _configured_cache.clear()
+        _configured_cache[key] = profiles
+        return profiles
     cm = CONFIG.get("cred")
     if cm is not None:
         profile = cm.summary()["profile"]
@@ -2676,16 +2734,6 @@ def _configured_profiles(region: str | None) -> set[str]:
 def _usable_models(models):
     return [model for model in models or [] if model.get("id") and model.get("supportsToolCall")
             and not model.get("disabled")]
-
-
-def _account_scope(account: dict, scope: str = "models") -> list[dict] | None:
-    """Merge root candidates into selector models while retaining selector metadata."""
-    picker = account.get("models")
-    if scope == "models" or picker is None:
-        return picker
-    seen = {item.get("id") for item in picker}
-    # Root entries supply missing names without replacing selector metadata.
-    return picker + [item for item in account.get("serves") or [] if item.get("id") not in seen]
 
 
 def _shared_catalog_sources(scope="models"):
@@ -2701,6 +2749,8 @@ def _shared_catalog_sources(scope="models"):
 
 
 def _effective_account_scope(account, scope="models", *, model_id=None):
+    # Account-level scopes stay live so a capability change is rechecked inside a request;
+    # the published profile catalogs below come from the indexed snapshot.
     native = _account_scope(account, scope)
     profile = account.get("profile")
     if profile not in SHARED_INTL_PROFILES or native is None:
@@ -2709,11 +2759,13 @@ def _effective_account_scope(account, scope="models", *, model_id=None):
 
 
 
-def _models_for_profile(profile: str, configured=None, *, scope: str = "models", model_id=None) -> list[dict]:
+def _models_for_profile(profile: str, configured=None, *, scope: str = "models", model_id=None,
+                        policy=None) -> list[dict]:
     models = _catalog_for(profile, scope, model_id=model_id)
     if models is None:
         # Static fallback is limited to legacy domestic CLI deployments.
-        configured = _configured_profiles(profile_region(profile)) if configured is None else configured
+        configured = (_configured_profiles(profile_region(profile), policy)
+                      if configured is None else configured)
         return ([{"id": name, "supportsToolCall": True} for name in DEFAULT_MODELS]
                 if CONFIG.get("model_cache") is None and CONFIG.get("account_catalogs") is None
                 and profile == "cn-cli" and configured <= {"cn-cli"} else [])
@@ -2756,21 +2808,23 @@ def _model_free(models, model: str | None, profile: str) -> bool:
                for item in models or [])
 
 
-def _model_profiles(model: str | None, region: str | None = None, configured=None) -> set[str]:
-    configured = _configured_profiles(region) if configured is None else configured
+def _model_profiles(model: str | None, region: str | None = None, configured=None, *, policy=None) -> set[str]:
+    configured = _configured_profiles(region, policy) if configured is None else configured
     profiles = {profile for profile in PROFILE_ENDPOINTS if _in_region(profile, region)}
     if not model:
         return profiles
     supported = {profile for profile in profiles
                  if any(item["id"] == _upstream_model(model, profile)
-                        for item in _models_for_profile(profile, configured, scope="serves", model_id=_upstream_model(model, profile)))}
+                        for item in _models_for_profile(profile, configured, scope="serves",
+                                                        model_id=_upstream_model(model, profile), policy=policy))}
     if model == "auto" and region == "cn":
         # WorkBuddy uses its advertised Auto; legacy CLI defaults remain separate.
         if "cn-work" in configured and "cn-work" in supported:
             return {"cn-work"}
-        if "cn-cli" in configured and _models_for_profile("cn-cli", configured):
+        if "cn-cli" in configured and _models_for_profile("cn-cli", configured, policy=policy):
             return {"cn-cli"}
-    if model == "auto" and region is None and "cn-cli" in configured and _models_for_profile("cn-cli", configured):
+    if (model == "auto" and region is None and "cn-cli" in configured
+            and _models_for_profile("cn-cli", configured, policy=policy)):
         supported.add("cn-cli")
     if model != "auto" and not supported and not CONFIG.get("model_guard") and len(configured) == 1:
         return configured
@@ -2806,8 +2860,35 @@ def _profile_has_credits(profile: str) -> bool:
                for entry in pool.entries() if model_policy.credential_enabled(CONFIG, entry))
 
 
+def _model_table_revisions() -> tuple:
+    """Return the revisions that a published model table depends on."""
+    pool = CONFIG.get("cred_pool")
+    ledger = CONFIG.get("ledger")
+    index = CONFIG.get("catalog_index")
+    return (getattr(pool, "revision", 0), model_policy.revision(CONFIG),
+            getattr(index, "revision", 0), getattr(ledger, "revision", 0))
+
+
+def _model_table(name, region, build):
+    """Reuse a published model table until a revision moves or the short TTL lapses."""
+    key = (name, region, *_model_table_revisions())
+    cached = _model_table_cache.get(key)
+    if cached is not None and cached[0] > time.monotonic():
+        perf_metrics.inc("model_table_hits")
+        return cached[1]
+    value = build(region)
+    _model_table_cache.clear()
+    _model_table_cache[key] = (time.monotonic() + _MODEL_TABLE_TTL, value)
+    perf_metrics.inc("model_table_builds")
+    return value
+
+
 def current_models(region: str | None = None) -> list[str]:
     """Merge models eligible for current accounts without region-specific client URLs."""
+    return _model_table("models", region, _build_current_models)
+
+
+def _build_current_models(region: str | None = None) -> list[str]:
     pool = CONFIG.get("cred_pool")
     with pool._lock if pool is not None else nullcontext():
         configured = _configured_profiles(region)
@@ -2853,6 +2934,10 @@ def current_models(region: str | None = None) -> list[str]:
 
 def current_model_details(region: str | None = None) -> list[dict]:
     """Return public model rates with per-profile values and the minimum eligible rate."""
+    return _model_table("details", region, _build_current_model_details)
+
+
+def _build_current_model_details(region: str | None = None) -> list[dict]:
     pool = CONFIG.get("cred_pool")
     details: dict[str, dict] = {}
     declarations = {}

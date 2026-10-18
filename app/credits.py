@@ -4,6 +4,7 @@
 import base64
 from copy import deepcopy
 import json
+import itertools
 import math
 import os
 import re
@@ -794,6 +795,9 @@ def fetch_request_usage(access_token: str, days: int = USAGE_MAX_DAYS,
 # Atomic JSON persistence for per-credential credit and check-in state
 # ---------------------------------------------------------------------------
 
+_LEDGER_REVISION = itertools.count(1)
+
+
 class CreditLedger:
     """Persist per-credential check-in and balance snapshots for expiry-aware scheduling."""
 
@@ -802,6 +806,8 @@ class CreditLedger:
         self.path = Path(store.path if store is not None else path)
         self._lock = threading.Lock()
         self._data: dict = {"version": 1, "creds": {}}
+        # Globally unique so a rebuilt ledger can never reuse the previous one's cache key.
+        self.revision = next(_LEDGER_REVISION)
         self._load()
 
     def _load(self):
@@ -816,6 +822,7 @@ class CreditLedger:
             self._data = {"version": 1, "creds": {}}
 
     def _save(self):
+        self.revision = next(_LEDGER_REVISION)
         if self._store is not None:
             self._store.put("credits", self._data)
             return
