@@ -621,6 +621,14 @@ def test_fetch_credits_diagnoses_missing_accounts_keys():
         message = str(error)
         assert "缺少 Accounts 结构" in message and "顶层 键：code,msg,data" in message
         assert "secret-value" not in message
+    renamed = {"code": 0, "data": {"Response": {"Data": {"AccountList": [], "TotalCount": 0},
+                                                "RequestId": "trace"}}}
+    try:
+        _with_client(_fake_client([renamed]), lambda: credits.fetch_credits(token))
+        raise AssertionError("renamed Accounts must raise")
+    except RuntimeError as error:
+        assert "AccountList,TotalCount" in str(error)  # 深层键名不得被 null 层挤出预算
+        assert "为 null" not in str(error)
 
 
 def test_fetch_credits_tolerates_unrelated_shape_noise():

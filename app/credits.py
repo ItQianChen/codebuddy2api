@@ -373,9 +373,10 @@ def _shape_keys(*layers: tuple[str, object]) -> str:
         if isinstance(value, dict):
             keys = list(value)[:6]
             parts.append(f"{label} 键：{','.join(str(key) for key in keys) or '无'}")
-        else:
+        elif value is not None:
+            # null 层只代表路径不存在，不占预算；深层键名才是诊断关键。
             parts.append(f"{label} 为 {_response_type(value)}")
-    return ("；".join(parts))[:110]
+    return ("；".join(parts))[:140]
 
 
 def _find_accounts(payload: dict) -> list | None:
