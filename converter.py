@@ -318,8 +318,9 @@ class CredentialManager:
             auth_oauth.ensure_plaintext_tokens(auth)
         return s
 
-    def _is_expired(self) -> bool:
-        s = self._session()
+    def _is_expired(self, s: dict | None = None) -> bool:
+        if s is None:
+            s = self._session()
         expires_at = (s.get("auth") or {}).get("expiresAt") or 0
         # Treat tokens as expired 60 seconds early.
         return time.time() * 1000 >= (expires_at - 60_000)
@@ -381,9 +382,11 @@ class CredentialManager:
     def get_headers(self) -> dict:
         """Return upstream headers with a current token, refreshing when necessary."""
         with self._lock:
-            if self._is_expired():
-                self._refresh()
+            # 复用同一次会话读取判断过期，稳态只做一次文件版本检查；刷新后才重读。
             s = self._session()
+            if self._is_expired(s):
+                self._refresh()
+                s = self._session()
             return self._build_headers_from(s.get("auth") or {}, _credential_account(s))
 
     def refresh_if_due(self, margin_s: int, keepalive_s: int) -> bool:
@@ -418,7 +421,7 @@ class CredentialManager:
                 "enterpriseName": acct.get("enterpriseName"),
                 "enterprise": is_enterprise_account(acct),
                 "token_expires_at": auth.get("expiresAt", 0),
-                "token_expired": self._is_expired(),
+                "token_expired": self._is_expired(s),
                 "last_refresh_time": auth.get("lastRefreshTime") or 0,
             }
 

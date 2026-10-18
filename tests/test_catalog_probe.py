@@ -173,6 +173,32 @@ class CatalogProbeTests(unittest.TestCase):
         self.assertEqual(aggregate.row("cn-cli")["status"], "ok")
         self.assertNotIn("token", json.dumps(view))
 
+    def test_manual_scan_keeps_a_failed_accounts_previous_catalog(self):
+        pool, _, cache, _ = self.build(3)
+        entries = pool.entries()
+        failed_key = converter.catalog_cache_key("cn-cli", entries[0]["account_key"])
+        cache.put(failed_key, model("hy3"), serves=model("hy3"))
+
+        def flaky(token, **_kwargs):
+            if token == "token-0":
+                raise RuntimeError("synthetic upstream")
+            self.calls.append(token)
+            return {"picker": model("glm-5.3"), "account": model("glm-5.3")}
+
+        with patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=flaky):
+            converter.start_catalog_scan()
+            for _ in range(200):
+                view = converter.catalog_scan_view()
+                if view["status"] != "running":
+                    break
+                time.sleep(0.01)
+        self.assertEqual(view["status"], "completed")
+        self.assertEqual((view["success"], view["failed"]), (2, 1))
+        self.assertEqual([row["status"] for row in view["accounts"]].count("failed"), 1)
+        # The failed account keeps its previous catalog instead of going empty.
+        self.assertEqual({item["id"] for item in cache.models(failed_key)}, {"hy3"})
+        self.assertEqual(set(self.calls), {"token-1", "token-2"})
+
     def test_manual_scan_reports_an_already_running_scan(self):
         pool, _, cache, _ = self.build(1)
         blocker = {}
