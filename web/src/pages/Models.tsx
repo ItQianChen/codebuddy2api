@@ -518,7 +518,9 @@ export function Models() {
         // A scan that just finished may have refreshed the catalog list.
         if (next.status === "completed" || next.status === "failed") resource.reload();
       })
-      .catch((err: unknown) => setError(errorMessage(err)));
+      .catch(() => {
+        // 被动状态轮询失败不升级为页面错误；提交扫描的失败才提示。
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
