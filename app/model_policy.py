@@ -218,7 +218,7 @@ def public_details(gateway, region=None):
         if accounts is not None:
             for entry in candidates:
                 profile = entry.get("profile")
-                for model in gateway._effective_account_scope(
+                for model in gateway._published_account_scope(
                         accounts.get(entry.get("account_key")) or {}, "serves", model_id=gateway._upstream_model(upstream, profile)) or []:
                     if model.get("id") == gateway._upstream_model(upstream, profile):
                         price = gateway._multiplier_value(model.get("credits"))

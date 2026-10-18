@@ -3035,6 +3035,16 @@ def _effective_account_scope(account, scope="models", *, model_id=None):
 
 
 
+def _published_account_scope(account, scope="models", *, model_id=None):
+    """Per-account catalog for a published table: indexed at publish time, live as a fallback."""
+    index = _catalog_index()
+    if index is not None:
+        items = index.account_catalog(account, scope)
+        if items is not None:
+            return items if model_id is None else [item for item in items if item.get("id") == model_id]
+    return _effective_account_scope(account, scope, model_id=model_id)
+
+
 def _models_for_profile(profile: str, configured=None, *, scope: str = "models", model_id=None,
                         policy=None) -> list[dict]:
     models = _catalog_for(profile, scope, model_id=model_id)
@@ -3197,7 +3207,7 @@ def _build_current_models(region: str | None = None) -> list[str]:
                 account = accounts.get(entry.get("account_key")) or {}
                 if account.get("profile") != profile:
                     continue
-                models = _usable_models(_effective_account_scope(account, "serves"))
+                models = _usable_models(_published_account_scope(account, "serves"))
                 if zero:
                     models = [model for model in models if _free_multiplier(model.get("credits"))]
                 out.extend(model["id"] for model in models)
@@ -3262,7 +3272,7 @@ def _build_current_model_details(region: str | None = None) -> list[dict]:
                 account = accounts.get(entry.get("account_key")) or {}
                 if account.get("profile") != profile:
                     continue
-                for item in _usable_models(_effective_account_scope(account, "serves")):
+                for item in _usable_models(_published_account_scope(account, "serves")):
                     record(profile, item, zero=zero)
         else:
             configured = _configured_profiles(region)
