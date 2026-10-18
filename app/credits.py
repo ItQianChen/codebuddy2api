@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 
 from .client_profiles import catalog_headers, enterprise_id_of
+from .safe_logging import sanitize_log_text
 from .site_routing import PROFILE_ENDPOINTS, profile_for_auth, profile_product
 
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -95,16 +96,38 @@ def _web_headers(api_host: str, access_token: str, uid: str = "", domain: str = 
     }
 
 
-def _post_json(client: httpx.Client, url: str, headers: dict, body: dict) -> tuple[int, dict]:
-    """POST JSON and return status/payload, raising AuthExpiredError on HTTP 401."""
+def _post_json_detail(client: httpx.Client, url: str, headers: dict, body: dict) -> tuple[int, object, dict]:
+    """POST JSON and retain bounded response-shape diagnostics."""
     r = client.post(url, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
     if r.status_code == 401:
         raise AuthExpiredError("登录身份过期")
+    response_headers = getattr(r, "headers", {}) or {}
+    content_type = response_headers.get("content-type", "") if hasattr(response_headers, "get") else ""
+    content_type = str(content_type)[:40]
+    content = getattr(r, "content", None)
+    if isinstance(content, bytes):
+        length = len(content)
+    elif isinstance(content, str):
+        length = len(content.encode("utf-8"))
+    else:
+        length = 0
     try:
         payload = r.json()
     except Exception:
-        payload = {}
-    return r.status_code, payload
+        # 只在诊断分支解码响应体，成功路径不读取完整文本。
+        raw_text = getattr(r, "text", "")
+        preview = sanitize_log_text(str(raw_text or ""), 60)
+        preview = preview.replace("\r", " ").replace("\n", " ")
+        return r.status_code, {}, {"is_json": False, "content_type": content_type,
+                                   "length": length, "preview": preview}
+    return r.status_code, payload, {"is_json": True, "content_type": content_type,
+                                    "length": length}
+
+
+def _post_json(client: httpx.Client, url: str, headers: dict, body: dict) -> tuple[int, dict]:
+    """POST JSON and return status/payload, raising AuthExpiredError on HTTP 401."""
+    status, payload, _ = _post_json_detail(client, url, headers, body)
+    return status, payload
 
 
 def _get_json(client: httpx.Client, url: str, headers: dict) -> tuple[int, dict]:
@@ -328,12 +351,56 @@ def _resource_body(page: int) -> dict:
     }
 
 
+def _response_type(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, dict):
+        return "dict"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _shape_keys(*layers: tuple[str, object]) -> str:
+    parts = []
+    for label, value in layers:
+        if isinstance(value, dict):
+            keys = list(value)[:6]
+            parts.append(f"{label} 键：{','.join(str(key) for key in keys) or '无'}")
+        elif value is not None:
+            # null 层只代表路径不存在，不占预算；深层键名才是诊断关键。
+            parts.append(f"{label} 为 {_response_type(value)}")
+    return ("；".join(parts))[:140]
+
+
+def _find_accounts(payload: dict) -> list | None:
+    """Locate the Accounts list first; type noise in unused sibling fields is not fatal."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    response = data.get("Response")
+    nested = data.get("data")
+    nested_response = nested.get("Response") if isinstance(nested, dict) else None
+    for candidate in (response.get("Data") if isinstance(response, dict) else None,
+                      nested_response.get("Data") if isinstance(nested_response, dict) else None,
+                      data):
+        if isinstance(candidate, dict) and isinstance(candidate.get("Accounts"), list):
+            return candidate["Accounts"]
+    return data["accounts"] if isinstance(data.get("accounts"), list) else None
+
+
 def _fetch_accounts_page(client, url: str, headers: dict, page: int, *, retry_empty: bool) -> list:
-    """Fetch one credit page with bounded retries, distinguishing expired authentication."""
+    """Fetch one credit page with bounded retries and response-shape diagnostics."""
     last_err: Exception | None = None
     for attempt in range(3):
         try:
-            status, payload = _post_json(client, url, headers, _resource_body(page))
+            status, payload, meta = _post_json_detail(client, url, headers, _resource_body(page))
         except AuthExpiredError:
             raise
         except httpx.HTTPError as e:
@@ -344,19 +411,34 @@ def _fetch_accounts_page(client, url: str, headers: dict, page: int, *, retry_em
             last_err = RuntimeError(f"积分接口 HTTP {status}")
             time.sleep(0.3 * (attempt + 1))
             continue
+        if not meta.get("is_json"):
+            last_err = RuntimeError(
+                f"积分接口返回非 JSON（{meta.get('content_type') or '未知类型'}，"
+                f"{meta.get('length', 0)} 字节，开头：{meta.get('preview') or '空'}）")
+            time.sleep(0.3 * (attempt + 1))
+            continue
+        if not isinstance(payload, dict):
+            last_err = RuntimeError(
+                f"积分接口返回结构无法识别（顶层为 {_response_type(payload)}）")
+            time.sleep(0.3 * (attempt + 1))
+            continue
         code = payload.get("code")
         if code not in (0, None):
             raise RuntimeError(str(payload.get("msg") or f"积分接口 code={code}"))
-        data = payload.get("data") or {}
-        resp = (data.get("Response") or {}).get("Data") or (data.get("data") or {}).get("Response", {}).get("Data") or data
-        # Missing account structure is not a confirmed zero balance.
-        accounts = None
-        if isinstance(resp, dict) and isinstance(resp.get("Accounts"), list):
-            accounts = resp["Accounts"]
-        elif isinstance(payload.get("data"), dict) and isinstance(payload["data"].get("accounts"), list):
-            accounts = payload["data"]["accounts"]
+        accounts = _find_accounts(payload)
         if accounts is None:
-            last_err = RuntimeError("积分接口返回缺少 Accounts 结构")
+            data = payload.get("data")
+            response = data.get("Response") if isinstance(data, dict) else None
+            nested = data.get("data") if isinstance(data, dict) else None
+            nested_response = nested.get("Response") if isinstance(nested, dict) else None
+            last_err = RuntimeError(
+                "积分接口返回缺少 Accounts 结构（" + _shape_keys(
+                    ("顶层", payload), ("data", data),
+                    ("data.Response", response), ("data.data", nested),
+                    ("data.Response.Data",
+                     response.get("Data") if isinstance(response, dict) else None),
+                    ("data.data.Response.Data",
+                     nested_response.get("Data") if isinstance(nested_response, dict) else None)) + "）")
             time.sleep(0.3 * (attempt + 1))
             continue
         if not accounts and retry_empty and attempt < 2:  # Retry a transient empty page once.
