@@ -1826,13 +1826,16 @@ def _publish_model_cache():
             # Token refreshes republish identical content; only a real change may bump the
             # catalog revision, or steady-state shards would rebuild on every maintenance write.
             signature = json.dumps(accounts, sort_keys=True, default=str)
-            if signature != _published_catalog_signature:
+            if (signature != _published_catalog_signature
+                    or CONFIG.get("account_catalogs") is None):
+                # The signature alone is not enough: a rebuilt pool or a fresh process may
+                # hold identical content while account_catalogs was never published.
                 _published_catalog_signature = signature
                 CONFIG["account_catalogs"] = accounts
                 CONFIG["model_catalogs"] = catalogs
                 CONFIG["models_remote"], CONFIG["models_intl"] = catalogs["cn-cli"], catalogs["intl-cli"]
+                invalidate_model_table()  # Drop the stale table first, then install the fresh index.
                 _publish_catalog_index(accounts)
-                invalidate_model_table()
 
 
 def _account_catalog_key(profile, headers):
@@ -1922,11 +1925,12 @@ def _refresh_laggard_catalogs(pool, ledger, failed, cache):
     dirty accounts follow; progress wakes the next cycle instead of waiting an hour.
     """
     missing, dirty = [], []
+    policy = model_policy.view(CONFIG)  # One snapshot for the whole loop; it holds the pool lock.
     with pool._lock:
         for entry in pool._entries:
             if (not entry.get("account_key") or entry.get("profile") is None
-                    or not model_policy.credential_enabled(CONFIG, entry)
-                    or not pool._healthy(entry)):
+                    or not model_policy.credential_enabled(CONFIG, entry, policy)
+                    or not pool._healthy(entry, policy)):
                 continue
             known = cache.age(catalog_cache_key(entry["profile"], entry["account_key"])) is not None
             if not known:
@@ -3281,6 +3285,7 @@ def _model_table_revisions() -> tuple:
 
 def _model_table(name, region, build):
     """Reuse a published model table until a revision moves or the short TTL lapses."""
+    _catalog_index()  # A rebuilt index bumps its revision; the key must see the fresh value.
     key = (name, region, *_model_table_revisions())
     cached = _model_table_cache.get(key)
     if cached is not None and cached[0] > time.monotonic():
