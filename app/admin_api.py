@@ -339,8 +339,20 @@ def install_admin(app, config, gateway):
                     "model_guard_locked": bool(resolved.get("model_guard", {}).get("locked")),
                     "model_capability_guard": config.get("model_capability_guard", True),
                     "model_capability_guard_locked": bool(resolved.get("model_capability_guard", {}).get("locked")),
+                    "catalog": gateway.catalog_status(),
                 })
         return await run_in_threadpool(build_models)
+
+    @route("POST", "/admin/models/scan")
+    async def models_scan_start(request):
+        """Start one user-triggered full catalog scan; it is never a periodic task."""
+        result = await run_in_threadpool(gateway.start_catalog_scan)
+        event("models.scan")
+        return JSONResponse(result)
+
+    @route("GET", "/admin/models/scan")
+    async def models_scan_state(request):
+        return JSONResponse(gateway.catalog_scan_view())
 
     def checked_rule(source, data, *, creating=False):
         if "custom" in data:

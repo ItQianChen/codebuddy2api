@@ -12,7 +12,8 @@ import unittest
 from unittest.mock import patch
 
 import converter
-from app import perf_metrics
+from app import model_policy, perf_metrics
+from app.control_store import ControlStore
 from app.credits import CreditLedger
 from app.routing_scheduler import MISMATCH_LIMIT, RoutingScheduler
 
@@ -80,6 +81,7 @@ class SchedulerPoolTests(unittest.TestCase):
     def setUp(self):
         temporary = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch.dict(os.environ, {"CODEBUDDY_AUTH_DIR": temporary}))
+        self.enterContext(patch.object(perf_metrics, "_COUNTERS", {}))
         self.root = Path(temporary)
 
     def build(self, count, mode="indexed"):
@@ -172,6 +174,32 @@ class SchedulerPoolTests(unittest.TestCase):
         with patch.object(converter.CredentialPool, "_eligible", wraps=pool._eligible) as eligible:
             pool.pick("session", "glm-5.3-flash")
             self.assertGreater(eligible.call_count, 0)
+
+    def pick_alias(self, pool, source):
+        """Select through one request-scoped alias, exactly as the resolver leaves the context."""
+        rule = model_policy.rule_for(converter.CONFIG, source)
+        token = model_policy._request_policy.set({"source": source, "upstream": rule["upstream_id"],
+                                                  "public_model": rule["public_id"], "rule": rule})
+        try:
+            manager = pool.pick(None, rule["upstream_id"])
+        finally:
+            model_policy._request_policy.reset(token)
+        return pool.entry_for(manager)
+
+    def test_aliases_with_different_bindings_do_not_share_a_shard(self):
+        pool, _ = self.build(4)
+        store = ControlStore(self.root / "control.sqlite3")
+        self.addCleanup(store.close)
+        entries = pool.entries()
+        for source, identity in (("alias-a", entries[0]["account_key"]),
+                                 ("alias-b", entries[1]["account_key"])):
+            store.update_model(source, {"public_id": f"{source}-out", "upstream_id": "glm-5.3-flash",
+                                        "custom": True, "credential_ids": [identity]},
+                               store.revision, known_models=())
+        with patch.dict(converter.CONFIG, {"control_store": store}):
+            self.assertEqual(self.pick_alias(pool, "alias-a")["id"], entries[0]["id"])
+            self.assertEqual(self.pick_alias(pool, "alias-b")["id"], entries[1]["id"])
+        self.assertEqual(len(pool._scheduler.report()["shards"]), 2)
 
     def test_balance_change_invalidates_the_shard(self):
         pool, ledger = self.build(4)

@@ -280,6 +280,39 @@ export function modelResponse(value: unknown): {
         : undefined,
   };
 }
+export type CatalogScan = {
+  status: "idle" | "running" | "completed" | "failed";
+  total: number;
+  completed: number;
+  success: number;
+  failed: number;
+  differences: number;
+  started_at: number | null;
+  finished_at: number | null;
+  accounts: RecordValue[];
+};
+export function catalogScanResponse(value: unknown): CatalogScan {
+  const data = object(value, "目录扫描");
+  const count = (field: string) => {
+    const parsed = number(data[field]);
+    if (parsed === null || parsed < 0) throw new Error(`目录扫描缺少 ${field}`);
+    return parsed;
+  };
+  const status = data.status;
+  if (status !== "idle" && status !== "running" && status !== "completed" && status !== "failed")
+    throw new Error("目录扫描状态无效");
+  return {
+    status,
+    total: count("total"),
+    completed: count("completed"),
+    success: count("success"),
+    failed: count("failed"),
+    differences: count("differences"),
+    started_at: number(data.started_at),
+    finished_at: number(data.finished_at),
+    accounts: Array.isArray(data.accounts) ? list(data.accounts, "目录扫描账号") : [],
+  };
+}
 export type Credential = RecordValue & { id: string; name: string | null };
 export function credentialResponse(value: unknown): Credential[] {
   return list(object(value).credentials, "凭证").map((c) => {

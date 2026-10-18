@@ -116,6 +116,13 @@ def _active(config, upstream, policy=None):
     return rule_for(config, upstream, policy), None
 
 
+def active_rule(config, model, policy=None):
+    """Return the rule governing this request's model, including a request-scoped alias."""
+    if not model:
+        return default_rule("")
+    return _active(config, model, policy)[0]
+
+
 def resolve(config, public_model):
     """Resolve one public name to a literal upstream ID while retaining its own policy."""
     if not isinstance(public_model, str) or not public_model.strip():

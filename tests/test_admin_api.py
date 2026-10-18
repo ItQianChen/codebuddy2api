@@ -39,6 +39,12 @@ class AdminApiTests(unittest.TestCase):
             admin_set_credential_enabled=Mock(side_effect=lambda identity, enabled: self.store.set_credential(identity, enabled)),
             admin_apply_settings=Mock(), admin_delete_guard=Mock(),
             managed_auth_dir=Mock(return_value=self.root), _store_credential=Mock(),
+            catalog_status=Mock(return_value={"probe_mode": "account", "representative": None,
+                                              "scan": {"status": "idle", "total": 0, "completed": 0,
+                                                       "success": 0, "failed": 0, "differences": 0,
+                                                       "started_at": None, "finished_at": None, "accounts": []}}),
+            start_catalog_scan=Mock(return_value={"status": "running"}),
+            catalog_scan_view=Mock(return_value={"status": "idle"}),
             _credential_identity=Mock(return_value="fingerprint"),
             _save_oauth_credential=Mock(return_value=self.root / "first.info"), _OAUTH=Mock())
         self.gateway._OAUTH.start.return_value = {"login_id": "task", "verification_uri": "https://www.codebuddy.cn/login", "expires_in": 600}
@@ -479,6 +485,19 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(response.json()["revision"], 1)
         self.assertEqual(response.json()["models"][0]["public_id"], "synced-model")
 
+
+    def test_catalog_scan_routes_require_session_and_delegate(self):
+        self.assertEqual(self.client.post("/admin/models/scan").status_code, 401)
+        self.assertEqual(self.client.get("/admin/models/scan").status_code, 401)
+        csrf = self.login()
+        started = self.client.post("/admin/models/scan", headers=csrf)
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual(started.json(), {"status": "running"})
+        self.gateway.start_catalog_scan.assert_called_once()
+        state = self.client.get("/admin/models/scan")
+        self.assertEqual(state.status_code, 200, state.text)
+        self.assertEqual(state.json(), {"status": "idle"})
+        self.gateway.catalog_scan_view.assert_called()
 
     def test_dashboard_granularity_is_validated_and_forwarded(self):
         response = self.client.get("/admin/dashboard?days=1&granularity=hour", headers=self.headers)

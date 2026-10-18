@@ -75,6 +75,7 @@ from app.adapters.chat_input import normalize_chat_messages
 from app.model_catalog_view import INTERNATIONAL as SHARED_INTL_PROFILES, share_models
 from app.catalog_index import CatalogIndex
 from app.routing_scheduler import RoutingScheduler
+from app.catalog_probe import AggregateCatalog
 from app.catalog_index import account_scope as _account_scope
 from app.inference_auth import require_api_key
 from app.admin_auth import SessionStoreError
@@ -1160,8 +1161,12 @@ class CredentialPool:
     def _candidates(self, model: str | None, *, region=None, tried=(), policy=None) -> list[dict]:
         """Exclude tried credentials and rank candidates by zero rate and credit expiry."""
         tried = set(tried)
+        # A request-scoped alias restricts the accounts, so its rule is part of the shard key.
+        rule = model_policy.active_rule(CONFIG, model, policy)
+        scope = (rule.get("public_id"), rule.get("region") or "", rule.get("profile") or "",
+                 tuple(rule.get("credential_ids") or ()))
         eligible = self._scheduler.candidates(
-            mode=RoutingScheduler.mode(CONFIG), revisions=self._shard_revisions(policy),
+            mode=RoutingScheduler.mode(CONFIG), revisions=(*self._shard_revisions(policy), scope),
             model=model, region=region, entries=self._entries,
             evaluate=lambda entry: self._eligible(entry, model, region=region, policy=policy))
         perf_metrics.inc("candidate_checks", len(eligible))
@@ -1752,29 +1757,41 @@ def _publish_model_cache():
     invalidate_model_table()
 
 
-def _sync_model_catalogs(pool, ledger, refs, failed):
-    cache = CONFIG.get("model_cache")
-    if cache is None:
-        return
+def _account_catalog_key(profile, headers):
+    return catalog_cache_key(profile, account_key(profile, headers.get("X-User-Id"),
+                                                  headers.get("X-Enterprise-Id")))
+
+
+def _fetch_catalog(headers):
+    """Fetch both catalog scopes for one account token; the only upstream call involved."""
+    scopes = credits_mod.fetch_model_scopes(
+        _bearer_token(headers), domain=headers.get("X-Domain", ""),
+        uid=headers.get("X-User-Id", ""), enterprise_id=headers.get("X-Enterprise-Id", ""))
+    return scopes["picker"], scopes["account"]
+
+
+def _store_catalog(pool, cache, entry, generation, key, models, serves):
+    """Publish one fetched catalog only while the credential lease is still current."""
+    def publish():
+        cache.put(key, models, serves=serves)
+        for current in pool._entries:
+            if current["cm"] is entry["cm"]:
+                current["catalog_dirty"] = False
+    return pool.apply_if_current(entry["cm"], generation, publish)
+
+
+def _sync_account_catalogs(pool, ledger, refs, failed, cache):
+    """Refresh every synced account's own catalog; used by the account probe mode."""
     for entry, generation, headers, profile in refs.values():
-        identity = account_key(profile, headers.get("X-User-Id"), headers.get("X-Enterprise-Id"))
         if not model_policy.credential_enabled(CONFIG, entry):
             continue
-        key = catalog_cache_key(profile, identity)
+        key = _account_catalog_key(profile, headers)
         if cache.fresh(key) and not entry.get("catalog_dirty"):
             continue
         perf_metrics.inc("catalog_fetch_count")
         try:
-            scopes = credits_mod.fetch_model_scopes(
-                _bearer_token(headers), domain=headers.get("X-Domain", ""),
-                uid=headers.get("X-User-Id", ""), enterprise_id=headers.get("X-Enterprise-Id", ""))
-            models, serves = scopes["picker"], scopes["account"]
-            def publish():
-                cache.put(key, models, serves=serves)
-                for current in pool._entries:
-                    if current["cm"] is entry["cm"]:
-                        current["catalog_dirty"] = False
-            if pool.apply_if_current(entry["cm"], generation, publish):
+            models, serves = _fetch_catalog(headers)
+            if _store_catalog(pool, cache, entry, generation, key, models, serves):
                 _log(f"[models] {profile} 模型表已刷新: 选择器 {len(models)} 个，"
                      f"账号根表 {len(serves)} 个")
             else:
@@ -1783,7 +1800,167 @@ def _sync_model_catalogs(pool, ledger, refs, failed):
             perf_metrics.inc("catalog_fetch_failures")
             failed.add(entry["id"])
             _sync_error(pool, ledger, entry, generation, "models", error)
+
+
+def _mark_catalog_diffs(pool, profile, model_ids, cache):
+    """Mark accounts whose own catalog lacks models the representative just advertised."""
+    if not model_ids:
+        return
+    with pool._lock:
+        for entry in pool._entries:
+            identity, current = entry.get("account_key"), entry.get("profile")
+            if not identity or current != profile:
+                continue
+            known = {item.get("id") for item in (cache.models(catalog_cache_key(profile, identity)) or [])}
+            if known and not model_ids <= known:
+                entry["catalog_dirty"] = True
+
+
+def _probe_profile_catalogs(pool, ledger, refs, failed, cache, aggregate):
+    """Probe at most one representative credential per product profile per cycle."""
+    for profile in PROFILE_ENDPOINTS:
+        if not aggregate.due(profile):
+            continue
+        candidates = [{"entry": entry, "generation": generation, "headers": headers,
+                       "account_key": entry.get("account_key")}
+                      for entry, generation, headers, candidate_profile in refs.values()
+                      if candidate_profile == profile and entry.get("account_key")
+                      and model_policy.credential_enabled(CONFIG, entry)]
+        target = aggregate.choose(
+            profile, candidates, age_of=lambda candidate: cache.age(_account_catalog_key(profile, candidate["headers"])))
+        if target is None:
+            aggregate.fresh(profile)
+            continue
+        entry, generation, headers = target["entry"], target["generation"], target["headers"]
+        key = _account_catalog_key(profile, headers)
+        perf_metrics.inc("catalog_fetch_count")
+        try:
+            models, serves = _fetch_catalog(headers)
+            if not _store_catalog(pool, cache, entry, generation, key, models, serves):
+                aggregate.failure(profile, source=entry.get("account_key"))
+                failed.add(entry["id"])
+                continue
+            aggregate.success(profile, source=entry.get("account_key"), generation=generation,
+                              models=[item.get("id") for item in models])
+            _mark_catalog_diffs(pool, profile, {item.get("id") for item in models}, cache)
+            _log(f"[models] {profile} 代表账号目录已刷新: 选择器 {len(models)} 个，"
+                 f"账号根表 {len(serves)} 个")
+        except Exception as error:
+            perf_metrics.inc("catalog_fetch_failures")
+            failed.add(entry["id"])
+            aggregate.failure(profile, source=entry.get("account_key"))
+            _sync_error(pool, ledger, entry, generation, "models", error)
+
+
+def _sync_model_catalogs(pool, ledger, refs, failed):
+    cache = CONFIG.get("model_cache")
+    if cache is None:
+        return
+    aggregate = CONFIG.get("aggregate_catalog")
+    if CONFIG.get("catalog_probe_mode", "account") == "representative" and aggregate is not None:
+        _probe_profile_catalogs(pool, ledger, refs, failed, cache, aggregate)
+    else:
+        _sync_account_catalogs(pool, ledger, refs, failed, cache)
     _publish_model_cache()
+
+
+CATALOG_SCAN_START_LOCK = threading.Lock()   # One user-triggered full scan at a time.
+CATALOG_SCAN_MAX_ROWS = 500                  # Bounded per-account progress payload.
+_SCAN_FIELDS = ("status", "total", "completed", "success", "failed", "differences",
+                "started_at", "finished_at", "accounts")
+
+
+def catalog_scan_view() -> dict:
+    """Return the current or last full catalog scan without any credential material."""
+    scan = CONFIG.get("catalog_scan")
+    if not scan:
+        return {"status": "idle", "total": 0, "completed": 0, "success": 0, "failed": 0,
+                "differences": 0, "started_at": None, "finished_at": None, "accounts": []}
+    return {key: scan.get(key) for key in _SCAN_FIELDS}
+
+
+def catalog_status() -> dict:
+    """Describe probe mode, representative state and the last full scan."""
+    aggregate = CONFIG.get("aggregate_catalog")
+    return {"probe_mode": CONFIG.get("catalog_probe_mode", "account"),
+            "representative": aggregate.view() if aggregate is not None else None,
+            "scan": catalog_scan_view()}
+
+
+def _scan_one_catalog(pool, cache, entry):
+    """Refresh one account's catalog and report how far it moved from the cached copy."""
+    cm = entry["cm"]
+    with cm._lock:
+        headers = cm.get_headers()
+        generation = cm._generation
+        profile = profile_for_headers(headers)
+    key = _account_catalog_key(profile, headers)
+    previous = {item.get("id") for item in (cache.models(key) or [])}
+    models, serves = _fetch_catalog(headers)
+    if not _store_catalog(pool, cache, entry, generation, key, models, serves):
+        raise RuntimeError("扫描期间凭证已变化，已跳过该账号")
+    current = {item.get("id") for item in models}
+    # A first fetch has no baseline to diff against; only a change to a known catalog counts.
+    differences = len(previous ^ current) if previous else 0
+    return {"profile": profile, "models": len(models), "serves": len(serves),
+            "differences": differences, "model_ids": [item.get("id") for item in models]}
+
+
+def _catalog_scan_worker(pool, cache, scan, entries):
+    """Scan every account serially, keeping each previous catalog when its refresh fails."""
+    aggregate = CONFIG.get("aggregate_catalog")
+    try:
+        for entry in entries:
+            row = {"name": Path(entry["id"]).name}
+            try:
+                if not model_policy.credential_enabled(CONFIG, entry):
+                    row.update(status="skipped", reason="disabled")
+                else:
+                    result = _scan_one_catalog(pool, cache, entry)
+                    row.update(status="ok", **{key: value for key, value in result.items() if key != "model_ids"})
+                    scan["success"] += 1
+                    scan["differences"] += result["differences"]
+                    if aggregate is not None and entry.get("account_key"):
+                        # A full scan satisfies this profile's TTL, so no probe follows immediately.
+                        aggregate.success(result["profile"], source=entry["account_key"],
+                                          generation=entry.get("generation"), models=result["model_ids"])
+            except Exception as error:
+                perf_metrics.inc("catalog_fetch_failures")
+                row.update(status="failed", error=sanitize_log_text(_network_error_text(error), 120))
+                scan["failed"] += 1
+            scan["completed"] += 1
+            if len(scan["accounts"]) < CATALOG_SCAN_MAX_ROWS:
+                scan["accounts"].append(row)
+        _publish_model_cache()
+        scan["status"] = "completed"
+    except Exception as error:
+        scan["status"] = "failed"
+        scan["error"] = sanitize_log_text(_network_error_text(error), 120)
+    finally:
+        scan["finished_at"] = time.time()
+        _log(f"[models] 手动全量扫描结束: 成功 {scan['success']}，失败 {scan['failed']}，"
+             f"差异 {scan['differences']}")
+
+
+def start_catalog_scan() -> dict:
+    """Start one user-triggered full scan; an already running scan is reported instead."""
+    pool, cache = CONFIG.get("cred_pool"), CONFIG.get("model_cache")
+    if pool is None or cache is None or credits_mod is None:
+        raise HTTPException(status_code=503, detail={"error": {
+            "message": "模型目录不可用，无法扫描", "type": "service_unavailable",
+            "code": "catalog_unavailable"}})
+    with CATALOG_SCAN_START_LOCK:
+        current = CONFIG.get("catalog_scan")
+        if current is not None and current.get("status") == "running":
+            return catalog_scan_view()
+        entries = pool.entries()
+        scan = {"status": "running", "total": len(entries), "completed": 0, "success": 0,
+                "failed": 0, "differences": 0, "started_at": time.time(), "finished_at": None,
+                "accounts": []}
+        CONFIG["catalog_scan"] = scan
+        threading.Thread(target=_catalog_scan_worker, args=(pool, cache, scan, entries),
+                         daemon=True, name="catalog-scan").start()
+    return catalog_scan_view()
 
 
 def _sync_usage(pool, entries=None, expected_identity=None):
@@ -2092,6 +2269,7 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "trial_ledger": None,
                 "model_guard": True,     # Reject models absent from authorized catalogs
                 "routing_scheduler": "indexed",  # legacy | shadow | indexed eligibility shards
+                "catalog_probe_mode": "representative",  # account | representative catalog refresh
                 "max_images": 16, "image_policy": "truncate",
                 "max_request_bytes": 32 * 1024 * 1024, "log_body_limit": 65536,
                 "max_inbound_bytes": 64 * 1024 * 1024,
@@ -4694,6 +4872,9 @@ def main():
     ap.add_argument("--stream-mode", choices=_STREAM_MODES,
                     default=os.environ.get("CODEBUDDY2API_STREAM_MODE", "compatible"),
                     help="流式传输：compatible 保持兼容聚合策略，realtime 增量发送且不重生成工具参数；默认 compatible")
+    ap.add_argument("--catalog-probe-mode", choices=("account", "representative"),
+                    default=os.environ.get("CODEBUDDY2API_CATALOG_PROBE_MODE", "representative"),
+                    help="目录探测：representative 每个产品每周期只探测一个代表账号（默认）；account 逐个账号刷新")
     ap.add_argument("--routing-scheduler", choices=("legacy", "shadow", "indexed"),
                     default=os.environ.get("CODEBUDDY2API_ROUTING_SCHEDULER", "indexed"),
                     help="路由调度：indexed 复用按模型分片（默认）；shadow 记录新旧差异并仍返回旧结果；legacy 每次全量判断")
@@ -4734,7 +4915,8 @@ def main():
                 "tool_call_max_retry", "max_inbound_bytes", "max_collect_bytes", "max_concurrent",
                 "failover_max", "retry_write_timeout", "upstream_keepalive", "max_inflight_per_account",
                 "request_context_mode", "stream_mode", "model_capability_guard", "admin_allowed_origins",
-                "responses_projection_mode", "responses_projection_max_bytes", "routing_scheduler"):
+                "responses_projection_mode", "responses_projection_max_bytes", "routing_scheduler",
+                "catalog_probe_mode"):
         CONFIG[key] = getattr(args, key)
     CONFIG["api_key"] = args.api_key
     CONFIG["desensitize"] = args.desensitize
@@ -4768,6 +4950,7 @@ def main():
         ledger = credits_mod.CreditLedger(store=CONFIG["state_store"])
         CONFIG["ledger"] = ledger
         CONFIG["model_cache"] = credits_mod.ModelCatalogCache(ttl=args.model_catalog_ttl, store=CONFIG["state_store"])
+        CONFIG["aggregate_catalog"] = AggregateCatalog(ttl=args.model_catalog_ttl, store=CONFIG["state_store"])
         CONFIG["cred_pool"].set_ledger(ledger)  # Verify balance ownership before publishing catalogs.
     _publish_model_cache()
     # Publish cached usage before maintenance threads start, so the dashboard is populated from

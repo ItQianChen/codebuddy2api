@@ -239,6 +239,12 @@ Credential domain / token issuer determine the product identity. Chat and refres
 - WebUI region, product and credential bindings strictly limit candidates; unavailable bindings never fall back to unselected accounts. Disabled models also reject direct requests. Renaming hides the original ID unless you choose to retain it.
 - Sent requests are not replayed against another account because of account availability or HTTP errors; later requests select again. Pending catalog/credential readiness usually returns 503 with `Retry-After`; unsupported or disabled models return 404.
 
+Routing and catalog maintenance are switchable without reverting data:
+
+- `routing_scheduler`: `indexed` (default) reuses one eligibility shard per model, request-scoped alias and revision set; `shadow` also runs the legacy scan, records mismatches under `GET /admin/performance` and still returns the legacy answer; `legacy` re-evaluates every credential on every request.
+- `catalog_probe_mode`: `representative` (default) probes one representative credential per product profile per TTL cycle, preferring the current source and rotating to the stalest account, with exponential backoff after failures; `account` refreshes every synced account each cycle. An unprobed or failed account keeps its last trusted catalog, so `/v1/models` stays the union of current account catalogs and only manually verified models are published.
+- `POST /admin/models/scan` refreshes every current account once, in the background; `GET /admin/models/scan` reports progress, successes, failures and catalog differences. It is the only way to calibrate all accounts at once and is never a periodic task.
+
 ### Model declarations and image compatibility
 
 `/v1/models` retains its existing fields and adds `capabilities`, `limits` and `metadata_by_profile`; management and routing previews expose the same metadata. Capabilities use `supported`, `unsupported`, `mixed` or `unknown`. Limits carry `state` (`known`, `mixed`, `unknown`) and `value`; only unanimous known limits have a numeric value. Per-profile arrays preserve distinct account declarations without identities. Safe descriptions, capabilities, windows, reasoning options, related models and parameter suggestions are allowlisted; credentials, internal configuration and authenticated URLs are excluded. These are upstream declarations, not native-model or measured guarantees; suggestions do not override requests.

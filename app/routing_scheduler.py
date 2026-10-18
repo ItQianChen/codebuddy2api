@@ -16,11 +16,12 @@ class RoutingScheduler:
     for the current revision set, and ``shadow`` does both while returning the legacy answer.
     """
 
-    __slots__ = ("_shards", "mismatches")
+    __slots__ = ("_shards", "mismatches", "_limit")
 
-    def __init__(self):
+    def __init__(self, limit=32):
         self._shards: dict[tuple, tuple] = {}
         self.mismatches: list[dict] = []
+        self._limit = max(1, limit)   # Aliases share one upstream model, so keep several shards.
 
     @staticmethod
     def mode(config) -> str:
@@ -39,8 +40,9 @@ class RoutingScheduler:
         shard = self._shards.get(key)
         if shard is None:
             shard = tuple(entry for entry in entries if evaluate(entry))
-            # Keep only the current revision set; a moved revision never reuses stale entries.
-            self._shards = {key: shard}
+            if len(self._shards) >= self._limit:
+                self._shards.pop(next(iter(self._shards)))  # A moved revision never matches again.
+            self._shards[key] = shard
             perf_metrics.inc("shard_builds")
             perf_metrics.inc("shard_size_rebuilt", len(shard))
         else:
