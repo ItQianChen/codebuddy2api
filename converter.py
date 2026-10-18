@@ -299,6 +299,13 @@ class CredentialManager:
         st = self.path.stat()
         return st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size
 
+    def _file_changed(self) -> bool:
+        """Whether the on-disk file moved since the last load; one stat, no re-read."""
+        try:
+            return self._cached is None or self._file_version() != self._mtime
+        except OSError:
+            return True
+
     def _load_if_stale(self):
         """Reload changed credentials and invalidate leases held by older requests."""
         mt = self._file_version()
@@ -593,6 +600,7 @@ class CredentialPool:
         self._sync_event = threading.Event()
         self._sync_retry: dict[str, float] = {}
         self._sync_attempts: dict[str, int] = {}
+        self._index_signature: tuple | None = None   # Semantic entry shape; unchanged reloads keep shards.
         self.reload(paths or [])
         if self._scan:
             self._rescan()             # Discover credentials at startup.
@@ -611,6 +619,11 @@ class CredentialPool:
                     continue
                 entry = by_id.get(cid)
                 if entry is not None:
+                    if (not reset and entry["generation"] == entry["cm"]._generation
+                            and not entry["cm"]._file_changed()):
+                        # Reconcile re-lists every file; only a moved or re-read file pays
+                        # the summary, and a generation gap means the identity may have moved.
+                        continue
                     if reset:
                         entry["cm"].invalidate()
                     try:
@@ -695,15 +708,21 @@ class CredentialPool:
 
     def _rebuild_index(self):
         """Rebuild request-side lookups after the entry list changed; never called per request."""
-        self.revision = next(_POOL_REVISION)
-        self._scheduler.clear()
-        self._index_id = {entry["id"]: entry for entry in self._entries}
-        self._index_cm = {entry["cm"]: entry for entry in self._entries}
+        index_id = {entry["id"]: entry for entry in self._entries}
+        index_cm = {entry["cm"]: entry for entry in self._entries}
         identity: dict[str, list[dict]] = {}
         for entry in self._entries:
             if entry.get("account_key"):
                 identity.setdefault(entry["account_key"], []).append(entry)
-        self._index_identity = identity
+        # Token refreshes rewrite files without changing who is routable, so only a real
+        # identity/profile/order move invalidates the revision and the scheduler shards.
+        signature = tuple((entry["id"], entry.get("account_key"), entry.get("profile"))
+                          for entry in self._entries)
+        if signature != self._index_signature:
+            self._index_signature = signature
+            self.revision = next(_POOL_REVISION)
+            self._scheduler.clear()
+        self._index_id, self._index_cm, self._index_identity = index_id, index_cm, identity
 
     def entry_for(self, cm):
         """Return the live entry owning this manager, or None after eviction."""
@@ -1172,7 +1191,7 @@ class CredentialPool:
     def _shard_revisions(self, policy=None) -> tuple:
         """Revisions that change static eligibility; any move invalidates every shard."""
         return (self.revision, model_policy.revision(CONFIG, policy), _catalog_revision,
-                getattr(self._ledger, "revision", 0))
+                getattr(self._ledger, "routing_revision", 0))
 
     def _candidates(self, model: str | None, *, region=None, tried=(), policy=None) -> list[dict]:
         """Exclude tried credentials and rank candidates by zero rate and credit expiry."""
@@ -1575,6 +1594,8 @@ HOUSEKEEP_MIN_SYNC_GAP_S = 300   # Skip accounts synced this recently, so event 
 HOUSEKEEP_CONCURRENCY = 4        # Default bounded workers per upstream endpoint family
 _ENDPOINT_KINDS = ("credits", "models", "usage")
 _endpoint_limits: dict = {}
+_ENDPOINT_LIMIT_LOCK = threading.Lock()  # Workers initialize semaphores concurrently.
+_published_catalog_signature: str | None = None  # Last published catalog content; skips no-op bumps.
 
 
 def _housekeep_concurrency() -> int:
@@ -1586,12 +1607,13 @@ def _housekeep_concurrency() -> int:
 def _endpoint_semaphore(kind: str):
     """One independent limit per upstream endpoint family, so no phase starves another."""
     limit = _housekeep_concurrency()
-    if _endpoint_limits.get("limit") != limit:
-        _endpoint_limits.clear()
-        _endpoint_limits["limit"] = limit
-        for name in _ENDPOINT_KINDS:
-            _endpoint_limits[name] = threading.BoundedSemaphore(limit)
-    return _endpoint_limits[kind]
+    with _ENDPOINT_LIMIT_LOCK:
+        if _endpoint_limits.get("limit") != limit:
+            _endpoint_limits.clear()
+            _endpoint_limits["limit"] = limit
+            for name in _ENDPOINT_KINDS:
+                _endpoint_limits[name] = threading.BoundedSemaphore(limit)
+        return _endpoint_limits[kind]
 
 
 def _bounded_map(function, items, limit):
@@ -1777,6 +1799,7 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
 
 def _publish_model_cache():
     """Publish account-scoped versioned catalogs, excluding ownerless shared caches."""
+    global _published_catalog_signature
     cache = CONFIG.get("model_cache")
     if cache is not None:
         pool = CONFIG.get("cred_pool")
@@ -1791,7 +1814,6 @@ def _publish_model_cache():
                 accounts[identity] = {"profile": profile,
                                       "models": cache.models(key) if known else None,
                                       "serves": cache.serves(key) if known else None}
-            CONFIG["account_catalogs"] = accounts
             catalogs = {profile: None for profile in PROFILE_ENDPOINTS}
             for account in accounts.values():
                 if account["models"] is not None:
@@ -1799,9 +1821,15 @@ def _publish_model_cache():
                     if models is None:
                         models = catalogs[account["profile"]] = []
                     models.extend(account["models"])
-            CONFIG["model_catalogs"] = catalogs
-            CONFIG["models_remote"], CONFIG["models_intl"] = catalogs["cn-cli"], catalogs["intl-cli"]
-            _publish_catalog_index(accounts)
+            # Token refreshes republish identical content; only a real change may bump the
+            # catalog revision, or steady-state shards would rebuild on every maintenance write.
+            signature = json.dumps(accounts, sort_keys=True, default=str)
+            if signature != _published_catalog_signature:
+                _published_catalog_signature = signature
+                CONFIG["account_catalogs"] = accounts
+                CONFIG["model_catalogs"] = catalogs
+                CONFIG["models_remote"], CONFIG["models_intl"] = catalogs["cn-cli"], catalogs["intl-cli"]
+                _publish_catalog_index(accounts)
     invalidate_model_table()
 
 
@@ -1830,24 +1858,25 @@ def _store_catalog(pool, cache, entry, generation, key, models, serves):
 
 
 def _sync_one_account_catalog(pool, ledger, entry, generation, headers, profile, failed, cache):
-    """Refresh one account's own catalog when it is stale or marked dirty."""
+    """Refresh one account's own catalog; True when a fetch was stored, None when skipped."""
     if not model_policy.credential_enabled(CONFIG, entry):
-        return
+        return None
     key = _account_catalog_key(profile, headers)
     if cache.fresh(key) and not entry.get("catalog_dirty"):
-        return
+        return None
     perf_metrics.inc("catalog_fetch_count")
     try:
         models, serves = _fetch_catalog(headers)
         if _store_catalog(pool, cache, entry, generation, key, models, serves):
             _log(f"[models] {profile} 模型表已刷新: 选择器 {len(models)} 个，"
                  f"账号根表 {len(serves)} 个")
-        else:
-            failed.add(entry["id"])
+            return True
+        failed.add(entry["id"])
     except Exception as error:
         perf_metrics.inc("catalog_fetch_failures")
         failed.add(entry["id"])
         _sync_error(pool, ledger, entry, generation, "models", error)
+    return False
 
 
 def _sync_account_catalogs(pool, ledger, refs, failed, cache):
@@ -1856,9 +1885,11 @@ def _sync_account_catalogs(pool, ledger, refs, failed, cache):
                       list(refs.values()), _housekeep_concurrency()))
 
 
-def _mark_catalog_diffs(pool, profile, model_ids, cache):
-    """Mark accounts whose own catalog lacks models the representative just advertised."""
-    if not model_ids:
+def _mark_catalog_diffs(pool, profile, model_ids, cache, previous_ids):
+    """Mark accounts lacking models newly advertised since the last representative probe."""
+    added = model_ids - previous_ids
+    if not added:
+        # Older catalog versions are expected in mixed pools; only genuine additions matter.
         return
     marked = []
     with pool._lock:
@@ -1867,11 +1898,53 @@ def _mark_catalog_diffs(pool, profile, model_ids, cache):
             if not identity or current != profile:
                 continue
             known = {item.get("id") for item in (cache.models(catalog_cache_key(profile, identity)) or [])}
-            if known and not model_ids <= known:
+            if known and not added <= known:
                 entry["catalog_dirty"] = True
                 marked.append(entry["id"])
     for cid in marked:  # Queue outside the lock so the wake-up can publish the model cache.
         pool._queue_sync(cid)
+
+
+_LAGGARD_REFRESH_CAP = 16  # Per-cycle floor for back-filling missing or dirty account catalogs.
+
+
+def _laggard_cap(total: int) -> int:
+    """Scale the per-cycle cap so any backlog converges within about twelve cycles."""
+    return max(_LAGGARD_REFRESH_CAP, -(-total // 12))
+
+
+def _refresh_laggard_catalogs(pool, ledger, failed, cache):
+    """Back-fill account-level catalogs in representative mode, where probing skips them.
+
+    An account without its own catalog is unroutable, so missing catalogs come first and
+    dirty accounts follow; progress wakes the next cycle instead of waiting an hour.
+    """
+    missing, dirty = [], []
+    with pool._lock:
+        for entry in pool._entries:
+            if (not entry.get("account_key") or entry.get("profile") is None
+                    or not model_policy.credential_enabled(CONFIG, entry)):
+                continue
+            known = cache.age(catalog_cache_key(entry["profile"], entry["account_key"])) is not None
+            if not known:
+                missing.append(entry)
+            elif entry.get("catalog_dirty"):
+                dirty.append(entry)
+    backlog = missing + dirty
+    cap = _laggard_cap(len(backlog))
+    if not backlog:
+        return
+    refs = {}
+    for entry in backlog[:cap]:
+        cm = entry["cm"]
+        with cm._lock:
+            refs[entry["id"]] = (entry, cm._generation, cm.get_headers(), entry["profile"])
+    results = _bounded_map(
+        lambda ref: _sync_one_account_catalog(pool, ledger, *ref, failed=failed, cache=cache),
+        list(refs.values()), _housekeep_concurrency())
+    if any(results) and len(backlog) > cap:
+        # Only real progress re-wakes the loop; failures fall back to the hourly cycle.
+        pool._sync_event.set()
 
 
 def _probe_profile_catalog(pool, ledger, refs, failed, cache, aggregate, profile):
@@ -1881,6 +1954,8 @@ def _probe_profile_catalog(pool, ledger, refs, failed, cache, aggregate, profile
                   for entry, generation, headers, candidate_profile in list(refs.values())
                   if candidate_profile == profile and entry.get("account_key")
                   and model_policy.credential_enabled(CONFIG, entry)]
+    if not candidates:
+        return  # This cycle has no synced account for the profile; no probe happened.
     target = aggregate.choose(
         profile, candidates, age_of=lambda candidate: cache.age(_account_catalog_key(profile, candidate["headers"])))
     if target is None:
@@ -1895,9 +1970,10 @@ def _probe_profile_catalog(pool, ledger, refs, failed, cache, aggregate, profile
             aggregate.failure(profile, source=entry.get("account_key"))
             failed.add(entry["id"])
             return
+        previous_ids = aggregate.model_ids(profile)
         aggregate.success(profile, source=entry.get("account_key"), generation=generation,
                           models=[item.get("id") for item in models])
-        _mark_catalog_diffs(pool, profile, {item.get("id") for item in models}, cache)
+        _mark_catalog_diffs(pool, profile, {item.get("id") for item in models}, cache, previous_ids)
         _log(f"[models] {profile} 代表账号目录已刷新: 选择器 {len(models)} 个，"
              f"账号根表 {len(serves)} 个")
     except Exception as error:
@@ -1923,6 +1999,7 @@ def _sync_model_catalogs(pool, ledger, refs, failed):
     aggregate = CONFIG.get("aggregate_catalog")
     if CONFIG.get("catalog_probe_mode", "account") == "representative" and aggregate is not None:
         _probe_profile_catalogs(pool, ledger, refs, failed, cache, aggregate)
+        _refresh_laggard_catalogs(pool, ledger, failed, cache)
     else:
         _sync_account_catalogs(pool, ledger, refs, failed, cache)
     _publish_model_cache()
@@ -1932,7 +2009,7 @@ CATALOG_SCAN_START_LOCK = threading.Lock()   # One user-triggered full scan at a
 CATALOG_SCAN_PROGRESS_LOCK = threading.Lock()  # Progress counters are shared by scan workers.
 CATALOG_SCAN_MAX_ROWS = 500                  # Bounded per-account progress payload.
 _SCAN_FIELDS = ("status", "total", "completed", "success", "failed", "differences",
-                "started_at", "finished_at", "accounts")
+                "started_at", "finished_at", "error", "profiles", "accounts")
 
 
 def catalog_scan_view() -> dict:
@@ -1940,7 +2017,8 @@ def catalog_scan_view() -> dict:
     scan = CONFIG.get("catalog_scan")
     if not scan:
         return {"status": "idle", "total": 0, "completed": 0, "success": 0, "failed": 0,
-                "differences": 0, "started_at": None, "finished_at": None, "accounts": []}
+                "differences": 0, "started_at": None, "finished_at": None, "error": None,
+                "profiles": {}, "accounts": []}
     return {key: scan.get(key) for key in _SCAN_FIELDS}
 
 
@@ -1998,6 +2076,23 @@ def _scan_one_account(pool, cache, scan, aggregate, entry):
             scan["accounts"].append(row)
 
 
+def _catalog_profile_versions(pool, cache) -> dict:
+    """Summarize distinct catalog versions per profile after a scan, without identities."""
+    versions: dict = {}
+    with pool._lock:
+        for entry in pool._entries:
+            profile, identity = entry.get("profile"), entry.get("account_key")
+            if not profile or not identity:
+                continue
+            ids = frozenset(item.get("id") for item in (cache.models(catalog_cache_key(profile, identity)) or []))
+            if ids:
+                versions.setdefault(profile, {})[ids] = versions.setdefault(profile, {}).get(ids, 0) + 1
+    return {profile: {"accounts": sum(counts.values()), "distinct": len(counts),
+                      "versions": sorted(({"models": len(ids), "accounts": count} for ids, count in counts.items()),
+                                         key=lambda row: (-row["accounts"], row["models"]))[:5]}
+            for profile, counts in versions.items()}
+
+
 def _catalog_scan_worker(pool, cache, scan, entries):
     """Scan every account with bounded workers, keeping each previous catalog when a refresh fails."""
     aggregate = CONFIG.get("aggregate_catalog")
@@ -2005,6 +2100,7 @@ def _catalog_scan_worker(pool, cache, scan, entries):
         list(_bounded_map(lambda entry: _scan_one_account(pool, cache, scan, aggregate, entry),
                           entries, _housekeep_concurrency()))
         _publish_model_cache()
+        scan["profiles"] = _catalog_profile_versions(pool, cache)
         scan["status"] = "completed"
     except Exception as error:
         scan["status"] = "failed"
@@ -2029,7 +2125,7 @@ def start_catalog_scan() -> dict:
         entries = pool.entries()
         scan = {"status": "running", "total": len(entries), "completed": 0, "success": 0,
                 "failed": 0, "differences": 0, "started_at": time.time(), "finished_at": None,
-                "accounts": []}
+                "error": None, "profiles": {}, "accounts": []}
         CONFIG["catalog_scan"] = scan
         threading.Thread(target=_catalog_scan_worker, args=(pool, cache, scan, entries),
                          daemon=True, name="catalog-scan").start()
@@ -2355,8 +2451,8 @@ CONFIG: dict = {"api_key": "", "cred": None, "log_path": None, "ledger": None,
                 "account_catalogs": None,  # Account-scoped models/serves; None enables legacy embedding
                 "trial_ledger": None,
                 "model_guard": True,     # Reject models absent from authorized catalogs
-                "routing_scheduler": "indexed",  # legacy | shadow | indexed eligibility shards
-                "catalog_probe_mode": "representative",  # account | representative catalog refresh
+                "routing_scheduler": "shadow",  # legacy | shadow | indexed eligibility shards
+                "catalog_probe_mode": "account",  # account | representative catalog refresh
                 "housekeep_concurrency": 4,  # Bounded maintenance workers; 1 restores serial behaviour
                 "max_images": 16, "image_policy": "truncate",
                 "max_request_bytes": 32 * 1024 * 1024, "log_body_limit": 65536,

@@ -73,6 +73,7 @@ def build(converter, credits_mod, count: int, root: Path):
         merged = catalogs[account["profile"]] = catalogs[account["profile"]] or []
         merged.extend(account["models"])
     config.update({"cred_pool": pool, "ledger": ledger, "account_catalogs": accounts,
+                   "routing_scheduler": "indexed",  # The benchmark measures the indexed path.
                    "catalog_index": converter._publish_catalog_index(accounts),
                    "model_catalogs": catalogs, "models_remote": catalogs["cn-cli"],
                    "models_intl": catalogs["intl-cli"], "model_cache": None,
@@ -106,6 +107,18 @@ def run(converter, credits_mod, perf_metrics, count, repeat, model):
         rows.append(measure(converter, perf_metrics, "pick", lambda: pool.pick("session", model), repeat))
         rows.append(measure(converter, perf_metrics, "headers_for",
                             lambda: pool.headers_for(None, model), repeat))
+        ledger = converter.CONFIG["ledger"]
+        churn_cid = pool.entries()[0]["id"]
+        churn_paths = [entry["id"] for entry in pool.entries()[:max(1, count // 10)]]
+        churn_balance = {"credits": 1000, "intl": False,
+                         "segments": [{"remaining": 1000, "expires_at": time.time() + 3600}]}
+
+        def churned():
+            # Token-refresh-like reconcile (reset=False) plus a maintenance-style ledger
+            # write: neither moves a semantic revision, so the shard stays hot.
+            pool.reload([Path(path) for path in churn_paths], reset=False)
+            ledger.update_credits(churn_cid, churn_balance)
+            pool.pick("session", model)
         cm = pool.pick("cooldown", model)
         pool.note_status(cm, 429, model=model)
         try:
@@ -127,6 +140,7 @@ def run(converter, credits_mod, perf_metrics, count, repeat, model):
         converter.CONFIG["max_inflight_per_account"] = limit
         rows.append(measure(converter, perf_metrics, "current_models", converter.current_models, repeat))
         rows.append(measure(converter, perf_metrics, "current_model_details", converter.current_model_details, repeat))
+        rows.append(measure(converter, perf_metrics, "pick + revision churn", churned, repeat))
     finally:
         temporary.cleanup()
         converter.CONFIG.update({"cred_pool": None, "ledger": None, "account_catalogs": None,

@@ -54,18 +54,18 @@ class AggregateCatalogTests(unittest.TestCase):
         self.assertEqual(aggregate.row("cn-cli")["failures"], 0)
         self.assertTrue(aggregate.due("cn-cli", now=1000.0 + 3601))
 
-    def test_choose_prefers_the_current_source_then_the_stalest_account(self):
+    def test_choose_prefers_unknown_then_source_then_the_stalest(self):
         aggregate = AggregateCatalog(ttl=100, clock=lambda: 1000.0)
         accounts = [{"account_key": "a"}, {"account_key": "b"}, {"account_key": "c"}]
         ages = {"a": 500.0, "b": 1000.0, "c": None}
         age_of = lambda candidate: ages[candidate["account_key"]]
         aggregate.success("cn-cli", source="a", generation=1, models=["hy3"])
         aggregate._data["profiles"]["cn-cli"]["retry_at"] = 0.0
-        self.assertEqual(aggregate.choose("cn-cli", accounts, age_of=age_of)["account_key"], "a")
-        ages["a"] = 10.0  # The source just refreshed; rotation moves to the stalest account.
-        self.assertEqual(aggregate.choose("cn-cli", accounts, age_of=age_of)["account_key"], "c")
+        self.assertEqual(aggregate.choose("cn-cli", accounts, age_of=age_of)["account_key"], "c")  # Unknown first.
         ages["c"] = 10.0
-        self.assertEqual(aggregate.choose("cn-cli", accounts, age_of=age_of)["account_key"], "b")
+        self.assertEqual(aggregate.choose("cn-cli", accounts, age_of=age_of)["account_key"], "a")  # Source reused.
+        ages["a"] = 10.0
+        self.assertEqual(aggregate.choose("cn-cli", accounts, age_of=age_of)["account_key"], "b")  # Stalest.
         ages["b"] = 10.0
         self.assertIsNone(aggregate.choose("cn-cli", accounts, age_of=age_of))
 
@@ -115,23 +115,69 @@ class CatalogProbeTests(unittest.TestCase):
             return {"picker": model(*names), "account": model(*names)}
         return fetch
 
-    def test_representative_probe_runs_once_per_profile_and_marks_differences(self):
+    def test_representative_probe_runs_once_per_profile_and_makes_accounts_routable(self):
         pool, ledger, cache, aggregate = self.build(3)
         entries = pool.entries()
-        stale = {item["id"] for item in model("hy3")}
-        cache.put(converter.catalog_cache_key("cn-cli", entries[1]["account_key"]), model("hy3"), serves=model("hy3"))
-        with patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=self.scopes("hy3", "glm-5.3")):
+        cache.put(converter.catalog_cache_key("cn-cli", entries[1]["account_key"]),
+                  model("hy3"), serves=model("hy3"))
+        with patch.object(converter.credits_mod, "fetch_model_scopes",
+                          side_effect=self.scopes("hy3", "glm-5.3")):
             converter._sync_model_catalogs(pool, ledger, self.refs(pool), set())
-        self.assertEqual(len(self.calls), 1)
-        self.assertTrue(stale < {item["id"] for item in model("hy3", "glm-5.3")})
-        fresh = [entry for entry in pool.entries() if not entry.get("catalog_dirty")]
-        self.assertEqual(len(fresh), 1)  # Only the representative stored a new catalog.
-        self.assertTrue(pool.entry_by_id(entries[1]["id"])["catalog_dirty"])
+        # One probe plus the two laggard refreshes (older-version and catalog-less accounts).
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual([len(call) for call in self.calls], [2, 2, 2])
+        for snapshot in entries:
+            entry = pool.entry_by_id(snapshot["id"])  # Snapshot copies predate the refresh.
+            self.assertFalse(entry.get("catalog_dirty"))
+            known = {item["id"] for item in cache.models(
+                converter.catalog_cache_key("cn-cli", entry["account_key"]))}
+            self.assertTrue({"hy3", "glm-5.3"} <= known)
+            self.assertTrue(pool._eligible(entry, "glm-5.3"))
         self.assertFalse(aggregate.due("cn-cli"))
         self.assertEqual(aggregate.row("cn-cli")["models"], ["glm-5.3", "hy3"])
         with patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=self.scopes("hy3")):
             converter._sync_model_catalogs(pool, ledger, self.refs(pool), set())
-            self.assertEqual(len(self.calls), 1)  # The TTL suppresses another fetch.
+            self.assertEqual(len(self.calls), 3)  # The TTL suppresses another fetch.
+
+    def test_laggard_backlog_converges_over_bounded_cycles(self):
+        pool, ledger, cache, _ = self.build(6)
+        with patch.object(converter, "_LAGGARD_REFRESH_CAP", 2), \
+             patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=self.scopes("hy3")):
+            for _ in range(10):
+                pool._sync_event.clear()
+                converter._sync_model_catalogs(pool, ledger, self.refs(pool), set())
+                if not any(entry.get("catalog_dirty") for entry in pool.entries()) and all(
+                        cache.models(converter.catalog_cache_key(entry["profile"], entry["account_key"]))
+                        for entry in pool.entries()):
+                    break
+        self.assertEqual(len(self.calls), 6)  # One probe plus five back-fills, no repeats.
+        for entry in pool.entries():
+            self.assertTrue(pool._eligible(entry, "hy3"))
+
+    def test_pending_cycle_without_candidates_keeps_retry_backoff(self):
+        aggregate = AggregateCatalog(ttl=3600, clock=lambda: 1000.0)
+        aggregate.success("cn-cli", source="fingerprint-a", generation=1, models=["hy3"])
+        aggregate.failure("cn-cli", source="fingerprint-a")
+        before = aggregate.row("cn-cli")
+        pool, ledger, cache, _ = self.build(1)
+        converter._probe_profile_catalog(pool, ledger, {}, set(), cache, aggregate, "cn-cli")
+        self.assertEqual(aggregate.row("cn-cli"), before)  # No probe ran, so no fresh reset.
+        self.assertEqual(self.calls, [])
+
+    def test_steady_representative_catalogs_are_not_remarked_dirty(self):
+        pool, ledger, cache, aggregate = self.build(2)
+        with patch.object(converter.credits_mod, "fetch_model_scopes",
+                          side_effect=self.scopes("hy3", "glm-5.3")):
+            converter._sync_model_catalogs(pool, ledger, self.refs(pool), set())
+        self.assertEqual(len(self.calls), 2)
+        # Force the next probe while keeping the same model set: an unchanged representative
+        # catalog must not re-mark the older-version account.
+        aggregate._data["profiles"]["cn-cli"]["retry_at"] = 0.0
+        with patch.object(cache, "age", lambda _key: 3601), \
+             patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=self.scopes("hy3")):
+            converter._sync_model_catalogs(pool, ledger, self.refs(pool), set())
+        self.assertEqual(len(self.calls), 3)  # Only the probe ran; no account re-fetch.
+        self.assertFalse(any(entry.get("catalog_dirty") for entry in pool.entries()))
 
     def test_probe_failure_keeps_other_catalogs_and_backs_off(self):
         pool, ledger, cache, aggregate = self.build(2)
@@ -172,6 +218,26 @@ class CatalogProbeTests(unittest.TestCase):
         self.assertEqual(len(view["accounts"]), 3)
         self.assertEqual(aggregate.row("cn-cli")["status"], "ok")
         self.assertNotIn("token", json.dumps(view))
+
+    def test_manual_scan_reports_cross_account_catalog_versions(self):
+        pool, _, cache, _ = self.build(3)
+
+        def varied(token, **_kwargs):
+            names = ("hy3", "glm-5.3") if token != "token-0" else ("hy3",)
+            self.calls.append(token)
+            return {"picker": model(*names), "account": model(*names)}
+
+        with patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=varied):
+            converter.start_catalog_scan()
+            for _ in range(200):
+                view = converter.catalog_scan_view()
+                if view["status"] != "running":
+                    break
+                time.sleep(0.01)
+        summary = view["profiles"]["cn-cli"]
+        self.assertEqual((summary["accounts"], summary["distinct"]), (3, 2))
+        self.assertEqual(summary["versions"], [{"models": 2, "accounts": 2}, {"models": 1, "accounts": 1}])
+        self.assertNotIn("token", json.dumps(summary))
 
     def test_manual_scan_keeps_a_failed_accounts_previous_catalog(self):
         pool, _, cache, _ = self.build(3)

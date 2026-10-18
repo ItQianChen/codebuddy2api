@@ -25,9 +25,9 @@ class RoutingScheduler:
 
     @staticmethod
     def mode(config) -> str:
-        """Resolve the configured mode, falling back to the safe indexed path."""
-        value = config.get("routing_scheduler", "indexed")
-        return value if value in MODES else "indexed"
+        """Resolve the configured mode, falling back to the conservative shadow default."""
+        value = config.get("routing_scheduler", "shadow")
+        return value if value in MODES else "shadow"
 
     def clear(self):
         self._shards.clear()
@@ -46,6 +46,7 @@ class RoutingScheduler:
             perf_metrics.inc("shard_builds")
             perf_metrics.inc("shard_size_rebuilt", len(shard))
         else:
+            self._shards[key] = self._shards.pop(key)  # LRU: hot models must not evict themselves.
             perf_metrics.inc("shard_hits")
         if mode == "shadow":
             legacy = [entry for entry in entries if evaluate(entry)]
@@ -65,7 +66,8 @@ class RoutingScheduler:
 
     def report(self) -> dict:
         """Describe the active shard set without exposing tokens."""
+        # Request threads insert concurrently, so iterate over a stable copy.
         return {"shards": [
                     {"model": key[0], "region": key[1], "size": len(value)}
-                    for key, value in self._shards.items()],
+                    for key, value in list(self._shards.items())],
                 "mismatches": list(self.mismatches)}

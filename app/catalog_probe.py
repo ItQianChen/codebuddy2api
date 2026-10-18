@@ -90,16 +90,20 @@ class AggregateCatalog:
         return math.inf if value is None else float(value)
 
     def choose(self, profile, candidates, *, age_of, now=None):
-        """Select the account to probe: the current source when due, else the stalest one."""
+        """Select the account to probe: unknown catalogs first, then the source, else the stalest."""
         now = self._clock() if now is None else now
         due = [candidate for candidate in candidates if self._age(candidate, age_of) >= self.ttl]
         if not due:
             return None
+        # An account without any catalog cannot be routed at all, so it outranks reuse.
+        unknown = [candidate for candidate in due if self._age(candidate, age_of) == math.inf]
+        if unknown:
+            return unknown[0]
         source = self.row(profile).get("source")
         for candidate in due:
             if candidate["account_key"] == source:
                 return candidate
-        # Unknown or oldest catalogs first, so rotation eventually covers every account.
+        # Oldest catalogs first, so rotation eventually covers every account.
         return max(due, key=lambda candidate: self._age(candidate, age_of))
 
     def success(self, profile, *, source, generation, models, now=None):

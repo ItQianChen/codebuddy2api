@@ -280,6 +280,11 @@ export function modelResponse(value: unknown): {
         : undefined,
   };
 }
+export type CatalogProfileVersions = {
+  accounts: number;
+  distinct: number;
+  versions: { models: number; accounts: number }[];
+};
 export type CatalogScan = {
   status: "idle" | "running" | "completed" | "failed";
   total: number;
@@ -289,6 +294,8 @@ export type CatalogScan = {
   differences: number;
   started_at: number | null;
   finished_at: number | null;
+  error: string | null;
+  profiles: Record<string, CatalogProfileVersions>;
   accounts: RecordValue[];
 };
 export function catalogScanResponse(value: unknown): CatalogScan {
@@ -310,8 +317,26 @@ export function catalogScanResponse(value: unknown): CatalogScan {
     differences: count("differences"),
     started_at: number(data.started_at),
     finished_at: number(data.finished_at),
+    error: typeof data.error === "string" && data.error ? data.error : null,
+    profiles: parseCatalogProfiles(data.profiles),
     accounts: Array.isArray(data.accounts) ? list(data.accounts, "目录扫描账号") : [],
   };
+}
+function parseCatalogProfiles(value: unknown): Record<string, CatalogProfileVersions> {
+  if (!value || typeof value !== "object") return {};
+  const profiles: Record<string, CatalogProfileVersions> = {};
+  for (const [name, row] of Object.entries(value as Record<string, unknown>)) {
+    const item = object(row, "目录版本");
+    profiles[name] = {
+      accounts: number(item.accounts) ?? 0,
+      distinct: number(item.distinct) ?? 0,
+      versions: list(item.versions, "目录版本列表").map((entry) => {
+        const version = object(entry, "目录版本条目");
+        return { models: number(version.models) ?? 0, accounts: number(version.accounts) ?? 0 };
+      }),
+    };
+  }
+  return profiles;
 }
 export type Credential = RecordValue & { id: string; name: string | null };
 export function credentialResponse(value: unknown): Credential[] {

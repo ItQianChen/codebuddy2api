@@ -12,8 +12,9 @@ _STARTED = time.monotonic()
 
 
 def inc(name: str, amount: int = 1) -> None:
-    """Count one event; a single dict update stays cheap enough for the request path."""
-    _COUNTERS[name] = _COUNTERS.get(name, 0) + amount
+    """Count one event; the lock only guards the insert that snapshot iterates over."""
+    with _LOCK:
+        _COUNTERS[name] = _COUNTERS.get(name, 0) + amount
 
 
 def observe(name: str, seconds: float) -> None:
@@ -24,7 +25,8 @@ def observe(name: str, seconds: float) -> None:
         return
     stats = _TIMINGS.get(name)
     if stats is None:
-        _TIMINGS[name] = {"count": 1.0, "total_s": sample, "max_s": sample, "min_s": sample}
+        with _LOCK:
+            _TIMINGS.setdefault(name, {"count": 1.0, "total_s": sample, "max_s": sample, "min_s": sample})
         return
     # Samples only ever add to these fields, so a lost update costs one sample, never an error.
     stats["count"] += 1

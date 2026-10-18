@@ -58,6 +58,23 @@ class SchedulerUnitTests(unittest.TestCase):
         self.assertEqual(perf_metrics.snapshot()["counters"]["shard_builds"], 2)
         self.assertEqual(perf_metrics.snapshot()["counters"]["shard_hits"], 1)
 
+    def test_shard_cache_evicts_least_recently_used(self):
+        scheduler = RoutingScheduler(limit=2)
+        evaluate = lambda entry: True
+        for model in ("m1", "m2"):
+            scheduler.candidates(mode="indexed", revisions=(1,), model=model, region=None,
+                                 entries=self.entries, evaluate=evaluate)
+        scheduler.candidates(mode="indexed", revisions=(1,), model="m1", region=None,
+                             entries=self.entries, evaluate=evaluate)  # Refresh the hot shard.
+        scheduler.candidates(mode="indexed", revisions=(1,), model="m3", region=None,
+                             entries=self.entries, evaluate=evaluate)  # Evicts m2, not m1.
+        self.assertEqual({row["model"] for row in scheduler.report()["shards"]}, {"m1", "m3"})
+
+    def test_conservative_rollout_defaults(self):
+        self.assertEqual(converter.CONFIG["routing_scheduler"], "shadow")
+        self.assertEqual(converter.CONFIG["catalog_probe_mode"], "account")
+        self.assertEqual(RoutingScheduler.mode({}), "shadow")
+
     def test_shadow_returns_legacy_and_records_mismatches(self):
         scheduler = RoutingScheduler()
         allowed = {"value": 0}
@@ -165,11 +182,25 @@ class SchedulerPoolTests(unittest.TestCase):
             self.assertEqual(eligible.call_count, 0)
         self.assertEqual(perf_metrics.snapshot()["counters"]["shard_hits"], 1)
 
-    def test_credential_reload_invalidates_the_shard(self):
+    def test_reload_without_identity_change_keeps_the_shard(self):
         pool, _ = self.build(4)
         pool.pick("session", "glm-5.3-flash")
         revision = pool._shard_revisions()
         pool.reload([Path(entry["id"]) for entry in pool.entries()], reset=False)
+        self.assertEqual(pool._shard_revisions(), revision)
+        with patch.object(converter.CredentialPool, "_eligible", wraps=pool._eligible) as eligible:
+            pool.pick("session", "glm-5.3-flash")
+            self.assertEqual(eligible.call_count, 0)
+
+    def test_identity_change_invalidates_the_shard(self):
+        pool, _ = self.build(4)
+        pool.pick("session", "glm-5.3-flash")
+        revision = pool._shard_revisions()
+        replaced = pool.entries()[0]
+        Path(replaced["id"]).write_text(json.dumps({"account": {"uid": "shard-replacement"}, "auth": {
+            "accessToken": "token-replacement", "domain": DOMAINS[replaced["profile"]],
+            "expiresAt": (time.time() + 3600) * 1000}}), encoding="utf-8")
+        pool.reload([Path(replaced["id"])], reset=False)
         self.assertNotEqual(pool._shard_revisions(), revision)
         with patch.object(converter.CredentialPool, "_eligible", wraps=pool._eligible) as eligible:
             pool.pick("session", "glm-5.3-flash")
@@ -207,6 +238,15 @@ class SchedulerPoolTests(unittest.TestCase):
         revision = pool._shard_revisions()
         ledger.update_credits(pool.entries()[0]["id"], {"credits": 0, "intl": False, "segments": []})
         self.assertNotEqual(pool._shard_revisions(), revision)
+
+    def test_balance_value_churn_keeps_the_shard(self):
+        pool, ledger = self.build(4)
+        pool.pick("session", "glm-5.3-flash")
+        revision = pool._shard_revisions()
+        churned = pool.entries()[0]
+        ledger.update_credits(churned["id"], {"credits": 99, "intl": False,
+                                               "segments": [{"remaining": 99, "expires_at": time.time() + 60}]})
+        self.assertEqual(pool._shard_revisions(), revision)  # Positive-to-positive is not a flip.
 
 
 if __name__ == "__main__":

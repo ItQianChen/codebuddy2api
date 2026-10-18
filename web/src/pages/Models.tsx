@@ -512,14 +512,25 @@ export function Models() {
   const loadScan = useCallback(() => {
     void api
       .get("/models/scan")
-      .then((response) => setScan(catalogScanResponse(response.data)))
+      .then((response) => {
+        const next = catalogScanResponse(response.data);
+        setScan(next);
+        // A scan that just finished may have refreshed the catalog list.
+        if (next.status === "completed" || next.status === "failed") resource.reload();
+      })
       .catch((err: unknown) => setError(errorMessage(err)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    if (scan?.status !== "running") return;
-    const timer = setInterval(loadScan, 2000);
-    return () => clearInterval(timer);
-  }, [scan?.status, loadScan]);
+    loadScan(); // An in-progress scan survives page reloads.
+  }, [loadScan]);
+  const scanError = scan?.status === "failed" ? scan.error : null;
+  const scanVersions = scan
+    ? Object.entries(scan.profiles)
+        .filter(([, row]) => row.distinct > 1)
+        .map(([name, row]) => `${name}：${row.distinct} 组目录版本`)
+        .join("；")
+    : "";
   const startScan = () => {
     if (scanBusy) return;
     setScanBusy(true);
@@ -618,6 +629,8 @@ export function Models() {
               ? "已完成"
               : "失败"}
           ：成功 {scan.success} · 失败 {scan.failed} · 目录差异 {scan.differences}
+          {scanError ? ` · ${scanError}` : ""}
+          {scanVersions ? ` · ${scanVersions}` : ""}
           ；失败账号保留上次成功的目录。
         </p>
       )}

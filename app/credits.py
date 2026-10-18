@@ -798,6 +798,19 @@ def fetch_request_usage(access_token: str, days: int = USAGE_MAX_DAYS,
 _LEDGER_REVISION = itertools.count(1)
 
 
+def _solvent_row(row: dict | None) -> bool:
+    """Mirror the pool's has-credit test so only eligibility flips bump the routing revision."""
+    credits = (row or {}).get("credits") or {}
+    if not credits:
+        return True
+    if credits.get("unlimited") and credits.get("enterprise"):
+        return True
+    try:
+        return float(credits.get("credits") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class CreditLedger:
     """Persist per-credential check-in and balance snapshots for expiry-aware scheduling."""
 
@@ -808,6 +821,8 @@ class CreditLedger:
         self._data: dict = {"version": 1, "creds": {}}
         # Globally unique so a rebuilt ledger can never reuse the previous one's cache key.
         self.revision = next(_LEDGER_REVISION)
+        # Bumped only when an account's solvency flips; value churn must not clear shards.
+        self.routing_revision = next(_LEDGER_REVISION)
         self._load()
 
     def _load(self):
@@ -856,7 +871,8 @@ class CreditLedger:
     def remove(self, cred_id: str):
         """Clear persisted credit, check-in and error state after an identity change."""
         with self._lock:
-            self._data["creds"].pop(cred_id, None)
+            if _solvent_row(self._data["creds"].pop(cred_id, None)) is not True:
+                self.routing_revision = next(_LEDGER_REVISION)
             self._save()
 
     # Check-in state
@@ -885,6 +901,7 @@ class CreditLedger:
 
     def update_credits(self, cred_id: str, result: dict):
         with self._lock:
+            was_solvent = _solvent_row(self._data["creds"].get(cred_id))
             e = self._entry(cred_id)
             e["credits"] = {
                 "credits": result.get("credits"),
@@ -900,6 +917,8 @@ class CreditLedger:
                 "unlimited": bool(result.get("unlimited")) and bool(result.get("enterprise")),
             }
             e["error"] = None
+            if _solvent_row({"credits": e["credits"]}) != was_solvent:
+                self.routing_revision = next(_LEDGER_REVISION)
             self._save()
 
     def note_error(self, cred_id: str, message: str):
