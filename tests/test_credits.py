@@ -623,6 +623,20 @@ def test_fetch_credits_diagnoses_missing_accounts_keys():
         assert "secret-value" not in message
 
 
+def test_fetch_credits_tolerates_unrelated_shape_noise():
+    """Parse Accounts even when unused sibling fields carry unexpected types."""
+    token = _jwt("https://www.codebuddy.cn/x")
+    account = {"Remain": 5}
+    for payload in ({"code": 0, "data": {"Response": {"Data": {"Accounts": [account]}},
+                                        "data": "x"}},
+                    {"code": 0, "data": {"Response": {"Data": {"Accounts": [account]}},
+                                        "data": [1]}},
+                    {"code": 0, "data": {"Accounts": [account], "Response": ""}}):
+        result = _with_client(_fake_client([payload]), lambda: credits.fetch_credits(token))
+        assert result["credits"] == 5.0 and result["count"] == 1
+    print("✅ test_fetch_credits_tolerates_unrelated_shape_noise")
+
+
 def test_fetch_credits_paginates_until_short_page():
     """Aggregate credit pages, stop on short pages and mark capped results partial."""
     token = _jwt("https://www.codebuddy.cn/x")
@@ -1063,6 +1077,7 @@ if __name__ == "__main__":
     test_fetch_credits_diagnoses_non_json_response()
     test_fetch_credits_diagnoses_top_level_list()
     test_fetch_credits_diagnoses_missing_accounts_keys()
+    test_fetch_credits_tolerates_unrelated_shape_noise()
     test_sync_usage_keeps_per_account_snapshots_on_failure()
     test_fetch_credits_paginates_until_short_page()
     test_fetch_request_usage_marks_partial_at_page_cap()

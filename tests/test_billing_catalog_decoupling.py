@@ -118,16 +118,22 @@ class BillingCatalogDecouplingTests(unittest.TestCase):
 
     def test_successful_retry_updates_balance_without_refetching_fresh_catalog(self):
         pool, ledger, entry = self.build("www.codebuddy.ai")
+        cid = entry["id"]
         with patch.object(converter.credits_mod, "fetch_credits", side_effect=[
             RuntimeError("billing down"), {"credits": 7, "intl": True, "segments": []}
-        ]), patch.object(converter.credits_mod, "fetch_model_scopes",
-                        return_value=self.catalog_fetch()) as catalog:
+        ]) as credits, patch.object(converter.credits_mod, "fetch_model_scopes",
+                                    return_value=self.catalog_fetch()) as catalog:
             self.run_cycle(pool, ledger)
-            self.run_cycle(pool, ledger)
+            converter._housekeep_once(pool, ledger, pending_only=True)  # 退避未到期，不得重查积分
+            self.assertEqual(credits.call_count, 1)
+            pool._sync_retry[cid] = time.monotonic() - 1  # 让退避立即到期
+            converter._housekeep_once(pool, ledger, pending_only=True)
+        self.assertEqual(credits.call_count, 2)
         self.assertEqual(catalog.call_count, 1)
-        self.assertEqual(ledger.entry(entry["id"])["credits"]["credits"], 7)
-        self.assertNotIn(entry["id"], pool._sync_retry)
-        self.assertIsNone(ledger.entry(entry["id"])["error"])
+        self.assertEqual(ledger.entry(cid)["credits"]["credits"], 7)
+        self.assertNotIn(cid, pool._sync_retry)
+        self.assertFalse(pool.sync_pending())
+        self.assertIsNone(ledger.entry(cid)["error"])
 
     def test_representative_mode_still_fetches_catalog_after_billing_failure(self):
         pool, ledger, entry = self.build("www.codebuddy.ai")
