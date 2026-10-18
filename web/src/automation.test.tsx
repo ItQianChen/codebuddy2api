@@ -38,6 +38,9 @@ function fixture() {
       profile: "intl-work",
       enabled: true,
       health: "ready",
+      catalog_ready: true,
+      sync_pending: true,
+      sync_error: "credits: billing unavailable",
       auto_checkin: false,
       auto_travel: false,
       travel_supported: false,
@@ -63,6 +66,8 @@ it("renders server preferences, allows international checkin opt-in, but never o
   const post = vi.spyOn(api, "post");
   render(<Credentials />);
   fireEvent.click(screen.getByRole("button", { name: "任务配置 cn.info" }));
+  expect(screen.getByText("目录已就绪")).toBeTruthy();
+  expect(screen.getByText("同步异常")).toBeTruthy();
   expect(screen.getByRole("switch", { name: "自动签到 cn.info" })).toHaveProperty("checked", true);
   expect(screen.getByRole("switch", { name: "自动旅行 cn.info" })).toHaveProperty("checked", true);
   // The daily turn is international-only, so the domestic switch is shown but unusable.

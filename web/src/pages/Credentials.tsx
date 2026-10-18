@@ -719,14 +719,20 @@ export function Credentials() {
     return (
       <>
         <strong>
-          {c.sync_pending === true
-            ? "目录同步中"
-            : c.catalog_ready === true
-              ? "目录已就绪"
+          {c.catalog_ready === true
+            ? "目录已就绪"
+            : c.sync_pending === true
+              ? "目录同步中"
               : "目录状态待确认"}
         </strong>
         <div className={s.credSyncTags}>
-          <small>{c.token_expired === true ? "Token 已过期" : "同步正常"}</small>
+          <small>
+            {c.token_expired === true
+              ? "Token 已过期"
+              : typeof c.sync_error === "string" && c.sync_error !== ""
+                ? "同步异常"
+                : "同步正常"}
+          </small>
           {cooldowns ? (
             cooldowns.length ? (
               cooldowns.map((cooldown, i) => (
