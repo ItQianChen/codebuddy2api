@@ -103,13 +103,30 @@ class BuildLockTests(unittest.TestCase):
                     if str(step.get("uses", "")).startswith("docker/metadata-action"))
         tags = [line.strip() for line in step["with"]["tags"].splitlines() if line.strip()]
         self.assertEqual(tags, [
-            # Pull-request builds carry an identity but are never pushed.
-            "type=ref,event=pr",
             "type=semver,pattern={{version}}",
             "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}",
             "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}",
         ])
         self.assertNotIn("flavor", step["with"])
+
+    def test_pull_requests_only_test_and_the_image_reuses_the_tested_webui(self):
+        """Tests run in sequence; the image is built after merge from the WebUI artifact."""
+        workflow = yaml.safe_load((ROOT / ".github/workflows/docker.yml").read_text())
+        # Documentation-only changes skip the pipeline; YAML 1.1 parses the "on" key as True.
+        docs = ["**.md", "docs/**", "examples/**", "LICENSE"]
+        for event in ("pull_request", "push"):
+            self.assertEqual(workflow[True][event]["paths-ignore"], docs)
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["web"]["needs"], ["test"])
+        self.assertEqual(jobs["image"]["if"], "github.event_name != 'pull_request'")
+        steps = jobs["image"]["steps"]
+        download = next(step for step in steps if str(step.get("uses", "")).startswith("actions/download-artifact"))
+        self.assertEqual(download["with"], {"name": "web-dist", "path": "web/dist"})
+        build = next(step for step in steps if str(step.get("uses", "")).startswith("docker/build-push-action"))
+        self.assertEqual(build["with"]["build-contexts"], "webui=web/dist")
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("FROM scratch AS webui", dockerfile)
+        self.assertIn("COPY --from=webui / ./web/dist/", dockerfile)
 
     def test_ci_and_container_installs_require_verified_wheels(self):
         installs = []
