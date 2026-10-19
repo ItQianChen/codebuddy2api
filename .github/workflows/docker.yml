@@ -192,8 +192,9 @@ jobs:
         run: |
           NAME="codebuddy2api-$(cat VERSION).tar.gz"
           # Upload only: an existing release keeps its body untouched; a missing one
-          # gets a placeholder the maintainer edits into the real notes.
-          if ! gh release view "$GITHUB_REF_NAME" --verify-tag >/dev/null 2>&1; then
+          # gets a placeholder the maintainer edits into the real notes. view has no
+          # --verify-tag (only create/upload do), and its error stays in the log.
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
               --notes "Automated assets for $GITHUB_REF_NAME; edit this body to add the release notes."
           fi

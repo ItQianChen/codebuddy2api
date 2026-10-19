@@ -128,6 +128,14 @@ class BuildLockTests(unittest.TestCase):
         self.assertIn("FROM scratch AS webui", dockerfile)
         self.assertIn("COPY --from=webui / ./web/dist/", dockerfile)
 
+    def test_release_job_detects_an_existing_release(self):
+        """gh release view rejects --verify-tag, which sent every tag down the create branch."""
+        steps = yaml.safe_load((ROOT / ".github/workflows/docker.yml").read_text())["jobs"]["release"]["steps"]
+        script = next(step["run"] for step in steps if "gh release upload" in step.get("run", ""))
+        view = next(line for line in script.splitlines() if "gh release view" in line)
+        self.assertNotIn("--verify-tag", view)
+        self.assertNotIn("2>&1", view)
+
     def test_ci_and_container_installs_require_verified_wheels(self):
         installs = []
         for path in (ROOT / "Dockerfile", ROOT / ".github/workflows/docker.yml"):
