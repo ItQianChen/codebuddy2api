@@ -355,6 +355,24 @@ def install_admin(app, config, gateway):
     async def models_scan_state(request):
         return JSONResponse(gateway.catalog_scan_view())
 
+    @route("POST", "/admin/models/rate-probe")
+    async def models_rate_probe_start(request):
+        """Probe every nominally free model once per product; spends a little credit if charged."""
+        result = await run_in_threadpool(gateway.admin_rate_probe_all)
+        event("models.rate_probe", {"count": result.get("total", 0)})
+        return JSONResponse(result)
+
+    @route("GET", "/admin/models/rate-probe")
+    async def models_rate_probe_state(request):
+        return JSONResponse(gateway.admin_rate_probe_view())
+
+    @route("POST", "/admin/models/{id:path}/rate-probe")
+    async def models_rate_probe_one(request):
+        source = request.path_params["id"]
+        result = await run_in_threadpool(gateway.admin_rate_probe_model, source)
+        event("model.rate_probe", {"model": source, "count": result.get("total", 0)})
+        return JSONResponse(result)
+
     def checked_rule(source, data, *, creating=False):
         if "custom" in data:
             raise ValueError("custom 是只读字段")

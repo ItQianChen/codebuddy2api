@@ -78,7 +78,9 @@ from app.model_catalog_view import INTERNATIONAL as SHARED_INTL_PROFILES, share_
 from app.catalog_index import CatalogIndex
 from app.routing_scheduler import RoutingScheduler
 from app.catalog_probe import AggregateCatalog
-from app.catalog_index import account_scope as _account_scope
+from app.catalog_index import account_scope as _catalog_account_scope
+from app import model_rates
+from app.rate_measurement import RateBook
 from app.inference_auth import require_api_key
 from app.admin_auth import SessionStoreError
 from app.content_filter import ContentFilterDetector, is_filter_error
@@ -2383,6 +2385,11 @@ def _housekeep_once(pool: CredentialPool, ledger, *, pending_only=False):
             _sync_model_catalogs(pool, ledger, refs, failed)
             if not pending_only:
                 _sync_usage(pool)
+                if control_store is not None:
+                    control_store.prune_rate_probes()
+            # Billing samples arrive with every request; re-reading them each pass lets a
+            # model that upstream started charging stop counting as free for routing.
+            model_rates.refresh(sys.modules[__name__])
         except Exception:
             failed.update(ids)
             raise
@@ -3091,7 +3098,7 @@ def _publish_catalog_index(accounts):
     _catalog_revision += 1
     index = CatalogIndex(accounts, revision=_catalog_revision,
                          policy_revision=model_policy.revision(CONFIG),
-                         is_enabled=_identity_enabled)
+                         is_enabled=_identity_enabled, scope_fn=_account_scope)
     CONFIG["catalog_index"] = index
     return index
 
@@ -3159,6 +3166,13 @@ def _configured_profiles(region: str | None, policy=None) -> set[str]:
     known = {profile for profile in PROFILE_ENDPOINTS
              if _in_region(profile, region) and _catalog_for(profile) is not None}
     return known or ({"intl-cli"} if region == "intl" else {"cn-cli"})
+
+
+def _account_scope(account, scope="models"):
+    """Account catalog with effective rates: manual override, measured billing, then declared."""
+    items = _catalog_account_scope(account, scope)
+    book = CONFIG.get("rate_book")
+    return items if book is None else book.overlay(account.get("profile"), items, _free_multiplier)
 
 
 def _usable_models(models):
@@ -3588,7 +3602,8 @@ def list_models(authorization: Optional[str] = Header(default=None),
     _check_auth(authorization, x_api_key)
     data = [{"id": item["id"], "object": "model", "created": 1700000000, "owned_by": "codebuddy",
              "credits": item["credits"], "credits_by_profile": item["credits_by_profile"],
-             **{key: item[key] for key in ("capabilities", "limits", "metadata_by_profile") if key in item}}
+             **{key: item[key] for key in ("credits_estimated", "capabilities", "limits", "metadata_by_profile")
+                if key in item}}
             for item in model_policy.public_details(sys.modules[__name__])]
     return {"object": "list", "data": data}
 
@@ -5383,6 +5398,7 @@ def main():
     CONFIG["usage_snapshots"] = UsageSnapshots(store=CONFIG["state_store"])
     CONFIG["cred"] = CONFIG["cred_pool"].first()
     CONFIG["account_catalogs"] = {}  # Disable static fallback before maintenance starts.
+    CONFIG["rate_book"] = RateBook(manual=lambda: model_rates.manual_rates(CONFIG))
     if credits_mod is not None:
         ledger = credits_mod.CreditLedger(store=CONFIG["state_store"])
         CONFIG["ledger"] = ledger
@@ -5403,6 +5419,7 @@ def main():
         # a later start under the superseded key could adopt it and revive admin cookies.
         runtime_management.close(CONFIG)
         ap.error(str(error))
+    model_rates.refresh(sys.modules[__name__])  # Audit and control stores are open from here on.
     if control_store is not None:
         control_store.claim_service_lease()
         _persist_cli_language(args.lang, control_store, CONFIG)

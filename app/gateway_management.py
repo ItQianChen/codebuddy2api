@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from .background_jobs import JobBoard
-from . import checkin, daily_chat, growth_chains, growth_events, growth_tasks, model_policy, travel, trial_management
+from . import (checkin, daily_chat, growth_chains, growth_events, growth_tasks, model_policy, model_rates,
+               travel, trial_management)
 
 
 # One job per account: a second start while one runs returns the running job.
@@ -312,11 +313,16 @@ class Management:
         pool = self.CONFIG.get("cred_pool")
         if pool:
             pool._rescan()
-        facts = {}
+        model_rates.refresh(self.gateway, max_age=model_rates.REFRESH_MAX_AGE_S)
+        facts, served, declared = {}, {}, {}
         for account in (self.CONFIG.get("account_catalogs") or {}).values():
             for item in self.gateway._usable_models(
                     self.gateway._effective_account_scope(account, "serves") or []):
                 source = item["id"]
+                served.setdefault(source, set()).add(account["profile"])
+                if "credits_source" in item:
+                    declared.setdefault(source, {})[account["profile"]] = \
+                        self.gateway._multiplier_value(item.get("credits_declared"))
                 row = facts.setdefault(source, {"id": source, "credits": None, "credits_by_profile": {}})
                 price = self.gateway._multiplier_value(item.get("credits"))
                 if price is not None:
@@ -334,10 +340,25 @@ class Management:
             metadata = self.gateway.model_capabilities.route_metadata(
                 self.gateway, rule["upstream_id"], rule=rule, include_disabled=True)
             prices = self.gateway.model_capabilities.declaration_prices(self.gateway, metadata)
-            result.append({**target, **metadata, **prices, **rule, "id": source,
+            upstream = rule["upstream_id"]
+            rates = model_rates.details(self.gateway, upstream, sorted(served.get(upstream, ())))
+            for profile, value in (declared.get(upstream) or {}).items():
+                rates[profile]["declared"] = value
+            result.append({**target, **metadata, **prices, **rule, "id": source, "rate_details": rates,
                            "available_credentials": len(preview["candidates"]),
                            "available": bool(preview["candidates"])})
         return sorted(result, key=lambda row: row["id"])
+
+    def admin_rate_probe_model(self, source):
+        """Probe one rule's upstream model on every product that serves it, in the background."""
+        upstream = model_policy.rule_for(self.CONFIG, source)["upstream_id"]
+        return model_rates.start_probe(self.gateway, upstream, scope=source)
+
+    def admin_rate_probe_all(self):
+        return model_rates.start_probe(self.gateway)
+
+    def admin_rate_probe_view(self):
+        return model_rates.job_view(self.gateway)
 
     def admin_model_preview(self, source, rule):
         upstream = rule.get("upstream_id", source)

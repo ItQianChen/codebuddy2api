@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from datetime import date
 import os
 from pathlib import Path
@@ -50,7 +51,7 @@ def buddy_claim_reserved(record):
 
 def validate_model(source, rule, models=None, known_models=(), *, legacy_scopes=False):
     _identifier(source, "模型规则 ID")
-    if not isinstance(rule, dict) or set(rule) - {"public_id", "upstream_id", "custom", "enabled", "keep_original", "region", "profile", "credential_ids"}:
+    if not isinstance(rule, dict) or set(rule) - {"public_id", "upstream_id", "custom", "enabled", "keep_original", "region", "profile", "credential_ids", "credits_override"}:
         raise ValueError("模型规则字段无效")
     clean = {"public_id": source, "upstream_id": source, "custom": False,
              "enabled": True, "keep_original": False,
@@ -76,6 +77,18 @@ def validate_model(source, rule, models=None, known_models=(), *, legacy_scopes=
         raise ValueError("账号指纹重复")
     if ids and (clean["region"] or clean["profile"]) and not legacy_scopes:
         raise ValueError("指定账号与区域/产品范围只能选择一种")
+    # Manual rates sit on the catalog model itself; an empty mapping is not stored at all.
+    override = clean.pop("credits_override", None)
+    override = {} if override is None else override
+    if (not isinstance(override, dict)
+            or set(override) - {"cn-cli", "cn-work", "intl-cli", "intl-work"}
+            or any(isinstance(rate, bool) or not isinstance(rate, (int, float))
+                   or not math.isfinite(rate) or not 0 <= rate <= 1000 for rate in override.values())):
+        raise ValueError("credits_override 必须是产品到 0–1000 倍率的映射")
+    if override and clean["custom"]:
+        raise ValueError("自建模型不能手填倍率，请在其上游模型的规则上设置")
+    if override:
+        clean["credits_override"] = {profile: float(rate) for profile, rate in sorted(override.items())}
     all_rules = {**(models or {}), source: clean}
     real_ids = set(known_models) | set(all_rules) | {"auto"}
     aliases = {}
@@ -133,6 +146,15 @@ class ControlStore:
                              "usage_before REAL, usage_after REAL, acp_usage REAL, "
                              "reserved_at REAL NOT NULL, confirmed_at REAL, updated_at REAL NOT NULL, "
                              "PRIMARY KEY (account_key, day))")
+            # One row per manual rate probe: the charge upstream reported for a known-size request.
+            self._db.execute("CREATE TABLE IF NOT EXISTS rate_probes ("
+                             "probed_at REAL NOT NULL, profile TEXT NOT NULL, model TEXT NOT NULL, "
+                             "credit REAL NOT NULL, input_tokens INTEGER NOT NULL, "
+                             "cache_read_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL)")
+            self._db.execute("CREATE INDEX IF NOT EXISTS rate_probes_time ON rate_probes(probed_at)")
+            # Additive: the calibrated rate of a charged probe, NULL when it could not be derived.
+            if "rate" not in [row[1] for row in self._db.execute("PRAGMA table_info(rate_probes)")]:
+                self._db.execute("ALTER TABLE rate_probes ADD COLUMN rate REAL")
             self._db.execute("CREATE TABLE IF NOT EXISTS runtime_state (name TEXT PRIMARY KEY, payload TEXT NOT NULL)")
             self._db.execute("CREATE TABLE IF NOT EXISTS state_imports (name TEXT PRIMARY KEY, imported INTEGER NOT NULL, migrated_at REAL NOT NULL)")
             self._db.execute("CREATE TABLE IF NOT EXISTS gateway_secrets (name TEXT PRIMARY KEY, value TEXT NOT NULL, announced INTEGER NOT NULL DEFAULT 0 CHECK(announced IN (0,1)))")
@@ -605,6 +627,39 @@ class ControlStore:
         with self._lock:
             self._db.execute("DELETE FROM daily_chats WHERE day<?", (cutoff,))
 
+
+    def record_rate_probe(self, profile, model, sample, rate=None):
+        """Persist one probe outcome; only the billing figures are kept, never the request."""
+        if profile not in ("cn-cli", "cn-work", "intl-cli", "intl-work"):
+            raise ValueError("产品无效")
+        _identifier(model, "模型 ID")
+        values = [sample.get(key) for key in ("credit", "input_tokens", "cache_read_tokens", "output_tokens")]
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+               or value < 0 for value in values):
+            raise ValueError("探测结果无效")
+        if rate is not None and (isinstance(rate, bool) or not isinstance(rate, (int, float))
+                                 or not math.isfinite(rate) or not 0 <= rate <= 1000):
+            raise ValueError("探测倍率无效")
+        with self._lock:
+            self._db.execute("INSERT INTO rate_probes(probed_at,profile,model,credit,input_tokens,"
+                             "cache_read_tokens,output_tokens,rate) VALUES(?,?,?,?,?,?,?,?)",
+                             (time.time(), profile, model, float(values[0]),
+                              *(int(value) for value in values[1:]), rate))
+
+    def rate_probes(self, since):
+        """Probe rows in the sample shape the rate measurement consumes, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT probed_at,profile,model,credit,input_tokens,cache_read_tokens,output_tokens,rate "
+                "FROM rate_probes WHERE probed_at>=? ORDER BY probed_at", (since,)).fetchall()
+        keys = ("started_at", "profile", "model", "credit", "input_tokens", "cache_read_tokens",
+                "output_tokens", "rate")
+        return [dict(zip(keys, row)) for row in rows]
+
+    def prune_rate_probes(self, keep_days=30):
+        cutoff = time.time() - int(keep_days) * 86400
+        with self._lock:
+            self._db.execute("DELETE FROM rate_probes WHERE probed_at<?", (cutoff,))
 
     def claim_service_lease(self) -> None:
         """Mark this process as the running instance so offline tools can refuse to write."""

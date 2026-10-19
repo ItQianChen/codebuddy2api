@@ -2405,6 +2405,12 @@ $white: var(--page);
   color: var(--muted);
   font-size: 11px;
 }
+/* 目录声明 0x 却被实测扣费：用警示色，避免与真正的限时免费混淆。 */
+.rateMeasured {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
 .rateProfile {
   font-size: 10px;
   color: $muted;

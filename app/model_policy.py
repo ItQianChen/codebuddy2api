@@ -227,7 +227,7 @@ def public_details(gateway, region=None):
             _request_policy.reset(token)
         if pool is not None and not candidates:
             continue
-        prices = {}
+        prices, measured = {}, set()
         accounts = config.get("account_catalogs")
         if accounts is not None:
             for entry in candidates:
@@ -236,8 +236,12 @@ def public_details(gateway, region=None):
                         accounts.get(entry.get("account_key")) or {}, "serves", model_id=gateway._upstream_model(upstream, profile)) or []:
                     if model.get("id") == gateway._upstream_model(upstream, profile):
                         price = gateway._multiplier_value(model.get("credits"))
-                        if price is not None:
-                            prices[profile] = min(prices.get(profile, price), price)
+                        if price is not None and price <= prices.get(profile, price):
+                            prices[profile] = price
+                            if model.get("credits_source") == "measured":
+                                measured.add(profile)
+                            else:
+                                measured.discard(profile)
         else:
             allowed_profiles = {entry.get("profile") for entry in candidates}
             prices = {profile: price for profile, price in item["credits_by_profile"].items()
@@ -249,7 +253,10 @@ def public_details(gateway, region=None):
             # A later catalog refresh must not overwrite an explicitly configured alias.
             if name in owners and owners[name] != source:
                 continue
-            out.append({"id": name, "credits": min(prices.values(), default=None),
-                        "credits_by_profile": prices,
-                        **route_metadata(gateway, upstream, entries=candidates, rule=rule, region=region)})
+            best = min(prices.values(), default=None)
+            row = {"id": name, "credits": best, "credits_by_profile": prices,
+                   **route_metadata(gateway, upstream, entries=candidates, rule=rule, region=region)}
+            if any(prices[profile] == best for profile in measured):
+                row["credits_estimated"] = True   # Upstream declares it free but charges it.
+            out.append(row)
     return out
