@@ -2,7 +2,13 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { api, type ModelRule } from "./api";
 import { type Job } from "./jobs";
-import { formatEstimate, rateDetails, rateSource, type RateProbeControl } from "./modelRates";
+import {
+  OutputProbeNote,
+  formatEstimate,
+  rateDetails,
+  rateSource,
+  type RateProbeControl,
+} from "./modelRates";
 import { ModelEditor, Models } from "./pages/Models";
 
 afterEach(() => vi.restoreAllMocks());
@@ -81,6 +87,51 @@ describe("rate provenance", () => {
     ]);
     render(<Models />);
     expect(await screen.findByText("0.05x · 手填")).toBeTruthy();
+  });
+});
+
+describe("output limit probes", () => {
+  it("marks silent clamping with the claimed/real ratio", () => {
+    render(
+      <OutputProbeNote
+        probe={{
+          claimed: 1048576,
+          measured: 32000,
+          verdict: "clamped",
+          note: "",
+          tested_at: "2026-10-19",
+        }}
+      />,
+    );
+    expect(screen.getByText("32K ⚠")).toBeTruthy();
+    expect(screen.getByText("钳制 33×")).toBeTruthy();
+  });
+
+  it("confirms a measured limit that meets the claim and flags unknowns", () => {
+    const { rerender } = render(
+      <OutputProbeNote
+        probe={{ claimed: 48000, measured: 48000, verdict: "at_least", note: "", tested_at: "" }}
+      />,
+    );
+    expect(screen.getByText("48K ✓")).toBeTruthy();
+    rerender(
+      <OutputProbeNote
+        probe={{ claimed: null, measured: null, verdict: "inconclusive", note: "", tested_at: "" }}
+      />,
+    );
+    expect(screen.getByText("未测出")).toBeTruthy();
+  });
+
+  it("overlays the probe file on the max output column", async () => {
+    page([measured], {
+      "/models/output-probes": {
+        probes: {
+          "hy4-preview-f": { claimed: 131072, measured: 32000, verdict: "clamped", note: "" },
+        },
+      },
+    });
+    render(<Models />);
+    expect(await screen.findByText("32K ⚠")).toBeTruthy();
   });
 });
 

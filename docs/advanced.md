@@ -256,7 +256,7 @@ Routing and catalog maintenance are switchable without reverting data:
 
 Both international profiles merge image-bearing consecutive `user` runs only after routing, preserving content order and image data. Domestic bodies, text-only runs and system/assistant/tool boundaries remain unchanged. Conflicting message attributes or unrepresentable content return `400 / image_user_run_not_mergeable`; final byte limits still apply. This compatibility step remains enabled when capability preflight is disabled; it neither adds retries nor makes a text model natively visual.
 
-### Measured rates
+### Measured rates and output limits
 
 Catalog multipliers are upstream declarations, and a model can keep declaring `x0.00` after upstream starts charging for it. Every response's `usage` carries the credit actually charged, and the audit log keeps it per request, so the gateway measures billing instead of trusting the declaration:
 
@@ -266,6 +266,16 @@ Catalog multipliers are upstream declarations, and a model can keep declaring `x
 - `GET /v1/models` reports the effective rate in `credits` / `credits_by_profile` and adds `credits_estimated: true` when the lowest rate is such an estimate.
 - A manual rate per model and product (`credits_override` on the model rule, `0`–`1000`; `0` confirms free) overrides both the declaration and the measurement for routing and `/v1/models`. Custom aliases carry no rate of their own; set it on the upstream model's rule.
 - `POST /admin/models/{id}/rate-probe` sends one ≈8K-token request for that model on every product that serves it, using an account with balance, and stores the charge upstream reported with the calibrated rate. `POST /admin/models/rate-probe` does the same for every model a product declares free. Both start the one shared background job (four probes at a time) and return it at once; starting while it runs returns the running job, and `GET /admin/models/rate-probe` reports progress with the model, product and step in flight, plus every result. A truly free model costs nothing to probe; a charged one costs its own request (≈0.6 credits for a ≈1x model) plus a few billing units for the reference. Every probe request, the reference included, is also written to the request log with its tokens and charge: protocol `rate_probe`, conversation ID prefixed `rate-probe-`. The calibrated samples are kept for 30 days in the control database and are not counted twice from the log.
+
+Declared `maxOutputTokens` values are frequently higher than what a model emits, and a larger `max_tokens` is clamped silently rather than rejected. `scripts/probe_max_tokens.py` measures the real limit through the gateway: it asks each model to count far enough to fill a tier and tells upstream truncation (`finish=length` below the request) apart from a model that chose to stop. Tiers never exceed the declared limit, models run four at a time, each within a 600-second budget, and results append to a JSONL log that `--resume` continues.
+
+```bash
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --panel-out auth/output_probes.json
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --models glm-5.2 --resume --panel-out auth/output_probes.json
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --dry-run
+```
+
+`--panel-out` merges results into `output_probes.json` beside `control.sqlite3`; models not re-measured keep their previous record. `GET /admin/models/output-probes` serves the file read-only and picks up a rerun on the next request without a restart. Probing spends real credits.
 
 ## Reasoning compatibility
 

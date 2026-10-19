@@ -257,7 +257,7 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 
 两种国际产品在选路后归并含图的连续 `user` 段，保留内容顺序和图片数据；国内请求、纯文本段及 system/assistant/tool 边界不变。消息级属性冲突或内容无法无损表达时返回 `400 / image_user_run_not_mergeable`，最终字节限制仍生效。图片兼容不随能力开关关闭，不增加重试，也不让文本模型获得原生视觉。
 
-### 实测计费
+### 实测计费与输出上限
 
 目录倍率只是上游声明；上游开始收费后，模型仍可能继续声明 `x0.00`。每次响应的 `usage` 都带有实际扣费 credit，审计日志按请求保存，因此网关以实测为准，而不是只信声明：
 
@@ -267,6 +267,16 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 - `GET /v1/models` 的 `credits` / `credits_by_profile` 为生效倍率；最低倍率来自估算时额外返回 `credits_estimated: true`。
 - 可按模型 × 产品手填倍率（模型规则的 `credits_override`，范围 `0`–`1000`，`0` 表示确认免费），路由与 `/v1/models` 均以手填值优先于声明与实测。自建别名不单独设倍率，请设在其上游模型的规则上。
 - `POST /admin/models/{id}/rate-probe` 在提供该模型的每个产品上，用有余额的账号发起一次约 8K token 的请求，并记录上游返回的扣费与校准倍率；`POST /admin/models/rate-probe` 对所有被某产品声明免费的模型执行同样探测。两者都启动同一个共享后台任务（并发 4）并立即返回，运行中再次发起会返回当前任务；`GET /admin/models/rate-probe` 返回进度、正在探测的模型/产品/步骤以及全部结果。真正免费的模型探测不消耗积分；被计费的模型消耗其自身请求（约 1x 的模型约 0.6 积分）加参考模型的数个计费单位。每个探测请求（含参考模型）也会写入请求日志，带 token 与扣费：协议为 `rate_probe`，会话 ID 以 `rate-probe-` 为前缀。校准样本在控制库中保留 30 天，不会从日志重复计入。
+
+目录声明的 `maxOutputTokens` 常高于模型实际能输出的量，且更大的 `max_tokens` 不会报错，而是被静默钳制。`scripts/probe_max_tokens.py` 经网关实测真实上限：要求模型数到足以写满当前档位，并区分上游截断（`finish=length` 且输出低于请求值）与模型主动收尾。档位不超过声明值，按 4 个模型并行，每个模型限时 600 秒，结果追加写入 JSONL，`--resume` 可断点续测。
+
+```bash
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --panel-out auth/output_probes.json
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --models glm-5.2 --resume --panel-out auth/output_probes.json
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --dry-run
+```
+
+`--panel-out` 将结果合并写入 `control.sqlite3` 同目录的 `output_probes.json`，未重测的模型保留原记录。`GET /admin/models/output-probes` 只读返回该文件，重跑后下次请求即生效，无需重启。探测会真实消耗积分。
 
 ## 思考兼容
 

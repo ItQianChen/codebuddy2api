@@ -40,12 +40,14 @@ import {
   specRange,
 } from "../modelMetadata";
 import {
+  OutputProbeNote,
   RateOverrideFields,
   describeProbe,
   formatEstimate,
   measuredNote,
   rateDetails,
   rateSource,
+  useOutputProbes,
   useRateProbeJob,
   type RateProbeControl,
   type RateSource,
@@ -586,6 +588,7 @@ export function Models() {
   const [guardNotice, setGuardNotice] = useState<string | null>(null);
   const [scan, setScan] = useState<CatalogScan | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
+  const outputProbes = useOutputProbes();
   const rateJob = useRateProbeJob(resource.reload);
   const loadScan = useCallback(() => {
     void api
@@ -913,6 +916,9 @@ export function Models() {
                       </td>
                       <td className={s.specCell}>
                         <SpecValue model={m} kind="output" />
+                        <OutputProbeNote
+                          probe={outputProbes[m.public_id] ?? outputProbes[m.upstream_id ?? m.id]}
+                        />
                       </td>
                       <td>
                         <EffortChips model={m} />

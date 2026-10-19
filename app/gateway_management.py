@@ -10,7 +10,7 @@ from starlette.staticfiles import StaticFiles
 
 from .background_jobs import JobBoard
 from . import (checkin, daily_chat, growth_chains, growth_events, growth_tasks, model_policy, model_rates,
-               travel, trial_management)
+               output_probes, travel, trial_management)
 
 
 # One job per account: a second start while one runs returns the running job.
@@ -359,6 +359,10 @@ class Management:
 
     def admin_rate_probe_view(self):
         return model_rates.job_view(self.gateway)
+
+    def admin_output_probes(self):
+        control = self.CONFIG.get("control_store")
+        return output_probes.read(output_probes.default_path(control.path if control is not None else None))
 
     def admin_model_preview(self, source, rule):
         upstream = rule.get("upstream_id", source)

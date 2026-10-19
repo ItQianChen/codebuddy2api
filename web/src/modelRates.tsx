@@ -1,7 +1,8 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, errorMessage, object, type ModelRule, type RecordValue } from "./api";
 import { profileLabel } from "./components";
 import { jobResponse, useJobPolling, type Job } from "./jobs";
+import { formatTokens } from "./modelMetadata";
 import s from "./ui.module.scss";
 
 export type Measured = {
@@ -65,6 +66,76 @@ export function measuredNote(detail: RateDetail): string {
     (m.rate != null
       ? "倍率来自探测：同一请求对照本产品已声明倍率的参考模型折算"
       : "日常流量多命中会话缓存，单次扣费不能折算倍率；点「一键探测倍率」测出")
+  );
+}
+
+export type OutputProbe = {
+  claimed: number | null;
+  measured: number | null;
+  verdict: "clamped" | "at_least" | "inconclusive";
+  note: string;
+  tested_at: string;
+};
+
+/** Measured output limits written by scripts/probe_max_tokens.py; empty when never probed. */
+export function useOutputProbes(): Record<string, OutputProbe> {
+  const [probes, setProbes] = useState<Record<string, OutputProbe>>({});
+  useEffect(() => {
+    void api
+      .get("/models/output-probes")
+      .then((response) => {
+        const raw = object(response.data).probes;
+        setProbes(raw && typeof raw === "object" ? (raw as Record<string, OutputProbe>) : {});
+      })
+      .catch(() => {
+        // 实测标注只是叠加信息，读取失败时最大输出列退回声称值。
+      });
+  }, []);
+  return probes;
+}
+
+export function OutputProbeNote({ probe }: { probe: OutputProbe | undefined }) {
+  if (!probe) return null;
+  const tip = [
+    `声称 ${probe.claimed ? formatTokens(probe.claimed) : "?"}`,
+    `实测 ${probe.measured ? formatTokens(probe.measured) : "?"}`,
+    probe.note,
+    probe.tested_at && `探测于 ${probe.tested_at}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const { claimed, measured } = probe;
+  if (measured && claimed && probe.verdict === "clamped" && measured < claimed) {
+    const times = claimed / measured;
+    return (
+      <span className={s.probeNote} title={tip}>
+        <strong className={s.probeClamped}>{formatTokens(measured)} ⚠</strong>
+        <small>钳制 {times >= 10 ? Math.round(times) : Math.round(times * 10) / 10}×</small>
+      </span>
+    );
+  }
+  if (measured && claimed && probe.verdict !== "inconclusive" && measured >= claimed * 0.98)
+    return (
+      <span className={s.probeNote} title={tip}>
+        <strong className={s.probeOk}>
+          {formatTokens(measured)} {measured > claimed * 1.02 ? "↑" : "✓"}
+        </strong>
+      </span>
+    );
+  if (measured && probe.verdict !== "inconclusive")
+    return (
+      <span className={s.probeNote} title={tip}>
+        <strong className={s.probeMuted}>
+          {probe.verdict === "at_least" ? "≥" : ""}
+          {formatTokens(measured)}
+        </strong>
+      </span>
+    );
+  return (
+    <span className={s.probeNote} title={tip}>
+      <strong className={s.probeMuted}>?</strong>
+      <small>未测出</small>
+    </span>
   );
 }
 

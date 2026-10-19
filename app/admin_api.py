@@ -366,6 +366,10 @@ def install_admin(app, config, gateway):
     async def models_rate_probe_state(request):
         return JSONResponse(gateway.admin_rate_probe_view())
 
+    @route("GET", "/admin/models/output-probes")
+    async def models_output_probes(request):
+        return JSONResponse(await run_in_threadpool(gateway.admin_output_probes))
+
     @route("POST", "/admin/models/{id:path}/rate-probe")
     async def models_rate_probe_one(request):
         source = request.path_params["id"]

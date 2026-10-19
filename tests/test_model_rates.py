@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 from fastapi import HTTPException
 
 import converter
-from app import model_rates, rate_measurement
+from app import model_rates, output_probes, rate_measurement
 from app.audit_store import AuditStore
 from app.control_store import ControlStore, validate_model
 from app.credits import CreditLedger, ModelCatalogCache
@@ -342,6 +342,28 @@ class ProbeRequestLogTests(unittest.TestCase):
             model_rates._send(self.gateway, self.entry, "tier-locked", "intl-work")
         row = self.record()
         self.assertEqual((row["outcome"], row["status_code"], row["error_code"]), ("error", 400, "11158"))
+
+
+class OutputProbeFileTests(unittest.TestCase):
+    def test_reads_valid_records_and_drops_malformed_ones(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / output_probes.FILENAME
+            self.assertEqual(output_probes.read(path)["exists"], False)
+            path.write_text(json.dumps({"version": 1, "probes": {
+                "glm-5.2": {"claimed": 1048576, "measured": 32000, "verdict": "clamped", "note": "钳制",
+                            "tested_at": "2026-10-19 12:00:00", "source": "probe_max_tokens.py"},
+                "bad": {"verdict": "huh"}, "": {"verdict": "clamped"}}}), encoding="utf-8")
+            view = output_probes.read(path)
+            self.assertTrue(view["exists"])
+            self.assertEqual(set(view["probes"]), {"glm-5.2"})
+            self.assertEqual(view["probes"]["glm-5.2"]["measured"], 32000)
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(output_probes.read(path)["probes"], {})
+
+    def test_file_sits_beside_the_control_database(self):
+        self.assertEqual(output_probes.default_path(Path("/state/control.sqlite3")),
+                         Path("/state") / output_probes.FILENAME)
+        self.assertIsNone(output_probes.default_path(None))
 
 
 class ZeroBalanceRoutingTests(unittest.TestCase):
