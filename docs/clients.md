@@ -70,6 +70,28 @@ The generation endpoints are `POST /v1/chat/completions`, `POST /v1/responses` a
 
 Streaming policy is a server setting, not a client request field. The default `compatible` mode aggregates Responses and tool-bearing Chat/Messages as before; `realtime` sends all three protocols incrementally. Non-streaming requests remain validated JSON in either mode. See [Streaming modes](advanced.md#streaming-modes) for configuration, partial-output errors and the loss of automatic tool-argument regeneration.
 
+## Web search
+
+Search-only endpoints backed by the upstream `/agenttool/v1/search`; no model is called and no tokens are billed.
+
+| Client | Setup |
+|--------|-------|
+| MCP clients (Claude Code, Codex CLI, …) | Streamable-HTTP server at `http://127.0.0.1:8787/v1/mcp` exposing one `web_search` tool |
+| REST clients | `POST /v1/search` with `{"query": "...", "max_results": 5}` |
+
+```bash
+claude mcp add --transport http web-search http://127.0.0.1:8787/v1/mcp \
+  --header "Authorization: Bearer YOUR_API_KEY"
+codex mcp add web-search --url http://127.0.0.1:8787/v1/mcp --bearer-token-env-var CODEBUDDY2API_KEY
+
+curl http://127.0.0.1:8787/v1/search -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"query": "rust edition guide", "max_results": 5}'
+```
+
+- Requests use the same API key as the other `/v1` endpoints.
+- `POST /v1/search` validates `query` and `max_results` (1–10) and returns the upstream result items unchanged: `{"object": "search.results", "query", "total_results", "results": [{title, url, snippet, ...}]}`.
+- The gateway picks an account per request and fails over once per gateway failover settings; deterministic upstream rejections are returned as-is.
+
 ## Protocol behavior worth knowing
 
 - `developer` messages become `system`; the first system message is placed first before matching tool results, without mutating the original payload.

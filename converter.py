@@ -61,7 +61,7 @@ from app.usage_snapshots import UsageSnapshots
 from app.client_hangup import ClientHungUp, await_or_hangup
 from app.observability import (AuditMiddleware, observe_recovery, observe_route, observe_stream_mode,
                                observe_responses_projection, observe_usage, observe_attempt,
-                               observe_failure, observe_failure_seq)
+                               observe_failure, observe_failure_seq, observe_discard)
 from app.credential_io import (CredentialFileError, read_import_file, atomic_write_credential,
                                credential_file_lock)
 from app.upstream_io import (ChatSSEAccumulator, StreamOutputBudget, UpstreamHTTPError,
@@ -88,7 +88,9 @@ from app import perf_metrics
 from app.startup import allows_open_noauth, load_startup_env, run_server
 from app.site_routing import (DOMESTIC, INTERNATIONAL, PROFILE_ENDPOINTS, site_for_auth, site_for_headers,
                               profile_for_auth, profile_for_headers, profile_region, profile_product,
-                              profile_site, chat_url_for_headers, refresh_url_for_auth)
+                              profile_site, chat_url_for_headers, search_url_for_headers, refresh_url_for_auth)
+from app import mcp_server, web_search
+from app.inbound_limits import anthropic_path
 from app.client_profiles import (CLI_VERSION, CLI_USER_AGENT, credential_headers, catalog_cache_key,
                                  account_key, canonical_uid, enterprise_id_of, identity_email,
                                  is_enterprise_account, normalize_uid)
@@ -2449,7 +2451,7 @@ async def _protocol_http_exception(request: Request, exc: HTTPException):
     if not isinstance(err, dict):
         err = {"message": str(detail), "type": "error"}
     message = str(err.get("message") or "")
-    if path.startswith("/v1/messages"):
+    if anthropic_path(path):
         # Preserve upstream business codes in Anthropic error envelopes.
         etype = _ANTHROPIC_ERROR_TYPES.get(str(err.get("type") or ""))
         if exc.status_code == 404:
@@ -4448,6 +4450,85 @@ async def _routed_fetch(payload, canonical, model_name, rid, t0, fetch, routed, 
                  f"{_replay_cost_note(error)}")
 
 
+def _wrap_search_error(status: int, raw: bytes, error) -> HTTPException:
+    """Re-shape upstream or transport failures as gateway error envelopes for search consumers."""
+    detail = _safe_err_raw(raw, status)
+    err = detail.get("error") if isinstance(detail, dict) else None
+    if not (isinstance(detail, dict) and isinstance(err, dict) and err.get("message")):
+        message = (err.get("message") if isinstance(err, dict) else None) or (
+            detail.get("message") if isinstance(detail, dict) else None) or (
+            detail.get("msg") if isinstance(detail, dict) else None) or (
+            raw.decode("utf-8", "replace").strip()[:500] or f"upstream HTTP {status}")
+        etype = ("rate_limit_error" if status == 429
+                 else "invalid_request_error" if 400 <= status < 500 else "upstream_error")
+        detail = {"error": {"message": message, "type": etype, "code": status}}
+    return HTTPException(status_code=status, detail=detail,
+                         headers=error.headers if isinstance(error, UpstreamHTTPError) else None)
+
+
+async def _web_search(query: str, max_results: int) -> list:
+    """Run one upstream web search with bounded credential failover; returns parsed results."""
+    rid = _request_id()
+    _log(f"[{rid}] ▶ WEB SEARCH | chars={len(query)} | max_results={max_results}")
+    body = web_search.request_body(query, max_results)
+    tried = []
+    recovered = None
+    while True:
+        cred, headers = await run_in_threadpool(
+            lambda: _cred_for({"model": "web-search"}, None, tried=tried))
+        url = search_url_for_headers(headers)
+        profile = profile_for_headers(headers)
+        observe_route(public_model="web-search", upstream_model=None, profile=profile,
+                      credential=account_key(profile, headers.get("X-User-Id"), headers.get("X-Enterprise-Id")))
+        t0 = time.time()
+        try:
+            async with _backend_stream(url, headers, body, timeout=web_search.QUERY_TIMEOUT,
+                                       rid=rid, model_name="web-search") as response:
+                if response.status_code != 200:
+                    _check_upstream_status(response.status_code, await read_bounded_error(response),
+                                           cred, None, headers=response.headers)
+                raw = await response.aread()
+            try:
+                payload = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                raise ValueError("invalid search response body") from None
+            results = web_search.parse_results(payload)
+        except (httpx.HTTPError, UpstreamResponseError) as error:
+            release_credential(cred)
+            status, raw = _upstream_failure(error, "web-search", t0, rid)
+            recovered = observe_failure_seq()
+            tried.append(_cred_manager(cred))
+            limit = _failover_limit()
+            if limit <= 0 or len(tried) > limit or not _failover_safe(error, raw):
+                raise _wrap_search_error(status, raw, error) from None
+            _log(f"[{rid}] ↻ 换凭证重放 {len(tried)}/{limit} | web-search | 上游 HTTP {status}"
+                 f"{_replay_cost_note(error)}")
+            continue
+        except ValueError as error:
+            release_credential(cred)
+            observe_failure("bad_search_response")
+            raise HTTPException(status_code=502, detail={"error": {"message": str(error),
+                                             "type": "upstream_error"}}) from None
+        release_credential(cred)
+        _note_cred_model_ok(cred, None)
+        if tried:
+            observe_recovery(recovered)
+        _log(f"[{rid}] ✔ WEB SEARCH {len(results)} 条 | {profile} | {time.time() - t0:.1f}s")
+        return results
+
+
+async def _mcp_search(query: str, count: int):
+    """Adapter for the MCP tool layer; map gateway errors to tool text instead of HTTP failures."""
+    try:
+        return await _web_search(query, count), None
+    except HTTPException as error:
+        detail = error.detail.get("error", {}) if isinstance(error.detail, dict) else {}
+        message = str(detail.get("message") or error.detail or "web search failed")
+        code = detail.get("code") if isinstance(detail, dict) else None
+        observe_failure(str(code) if code else f"http_{error.status_code}")
+        return None, message
+
+
 def _note_content_filter(rid, model_name, *, final):
     stage = "content_filter" if final else "content_filter_retry"
     observe_attempt(stage, error_code="content_filter")
@@ -4718,6 +4799,69 @@ async def create_message(request: Request,
                                  model_name, t0, rid, cred=cred)
     return _routed_stream(payload, prepared, model_name, rid, t0, attempt,
                           chat_body, cred, headers, url)
+
+
+@app.post("/v1/search")
+async def web_search_endpoint(request: Request,
+                              authorization: Optional[str] = Header(default=None),
+                              x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
+    """Serve generic REST web searches; returns the upstream result items unchanged."""
+    _check_auth(authorization, x_api_key)
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail={"error": {"message": f"bad json: {e}",
+                                         "type": "invalid_request_error"}})
+    query = payload.get("query") if isinstance(payload, dict) else None
+    if not isinstance(query, str) or not query.strip():
+        raise HTTPException(status_code=400, detail={"error": {"message": "query is required",
+                                       "type": "invalid_request_error"}})
+    max_results, problem = _validated_max_results(payload.get("max_results")
+                                                  if isinstance(payload, dict) else None)
+    if problem:
+        raise HTTPException(status_code=400, detail={"error": {"message": problem,
+                                       "type": "invalid_request_error"}})
+    results = await _web_search(query.strip(), max_results)
+    return {"object": "search.results", "query": query, "total_results": len(results), "results": results}
+
+
+def _validated_max_results(value) -> tuple[int, str]:
+    """Accept the upstream max_results field with the same bounds the MCP tool enforces."""
+    if value is None:
+        return web_search.DEFAULT_RESULTS, ""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not float(value).is_integer():
+        return 0, "max_results must be an integer"
+    number = int(value)
+    if number < 1 or number > web_search.MAX_RESULTS:
+        return 0, f"max_results must be between 1 and {web_search.MAX_RESULTS}"
+    return number, ""
+
+
+@app.post("/v1/mcp")
+async def mcp_endpoint(request: Request,
+                       authorization: Optional[str] = Header(default=None),
+                       x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
+    """Serve the stateless MCP streamable-HTTP surface exposing one web_search tool."""
+    _check_auth(authorization, x_api_key)
+    origin = request.headers.get("origin")
+    if origin:
+        # 只有浏览器会带 Origin（CSRF/DNS rebinding 防线）；MCP 客户端从不带。
+        return JSONResponse({"error": {"message": "browser origins are not accepted on /v1/mcp",
+                                       "type": "invalid_request_error"}}, status_code=403)
+    try:
+        message = await request.json()
+    except ValueError:
+        return JSONResponse(mcp_server.error_body(None, mcp_server.JSONRPC_PARSE_ERROR, "Parse error"),
+                            status_code=400)
+    executes = (isinstance(message, dict) and message.get("method") == "tools/call"
+                and message.get("id") is not None)
+    if not executes:
+        # 协议握手与列表请求不产生上游调用，不进入请求统计。
+        observe_discard()
+    status, body = await mcp_server.dispatch(request.headers, message, _mcp_search)
+    if status == 202 or body is None:
+        return Response(status_code=202)
+    return JSONResponse(body, status_code=status)
 
 
 async def _stream_anthropic(url: str, headers: dict, body: dict,

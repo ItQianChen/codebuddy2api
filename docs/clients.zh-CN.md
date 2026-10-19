@@ -70,6 +70,28 @@ Cherry Studio、ZCode、LobeChat、NextChat、Open WebUI 或自研 SDK 客户端
 
 流式策略是服务端设置，不是客户端请求字段。默认 `compatible` 保持 Responses 及带工具 Chat/Messages 的聚合行为；`realtime` 让三个协议都增量发送。两种模式的非流式请求均为经过校验的 JSON。配置、部分输出错误及不再自动重生成工具参数等限制见[流式模式](advanced.zh-CN.md#流式模式)。
 
+## 联网搜索
+
+仅搜索的端点，上游为 `/agenttool/v1/search`：不调用模型，不产生 token 计费。
+
+| 客户端 | 配置 |
+|--------|------|
+| MCP 客户端（Claude Code、Codex CLI 等） | Streamable-HTTP 服务器 `http://127.0.0.1:8787/v1/mcp`，暴露一个 `web_search` 工具 |
+| REST 客户端 | `POST /v1/search`，请求体 `{"query": "...", "max_results": 5}` |
+
+```bash
+claude mcp add --transport http web-search http://127.0.0.1:8787/v1/mcp \
+  --header "Authorization: Bearer YOUR_API_KEY"
+codex mcp add web-search --url http://127.0.0.1:8787/v1/mcp --bearer-token-env-var CODEBUDDY2API_KEY
+
+curl http://127.0.0.1:8787/v1/search -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{"query": "rust edition guide", "max_results": 5}'
+```
+
+- 与其他 `/v1` 端点使用同一个 API key。
+- `POST /v1/search` 校验 `query` 与 `max_results`（1–10），上游结果条目原样返回：`{"object": "search.results", "query", "total_results", "results": [{title, url, snippet, ...}]}`。
+- 网关按请求选号，并按网关 failover 配置做一次换号重试；上游确定性拒绝原样返回。
+
 ## 值得了解的协议行为
 
 - 先将 `developer` 转为 `system` 并置顶首条系统消息，再关联工具结果；不改动调用方原始载荷。
