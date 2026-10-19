@@ -727,6 +727,8 @@ class AdminApiTests(unittest.TestCase):
     def test_logs_dashboard_clear_confirmations_and_404(self):
         self.assertEqual(self.client.get("/admin/logs?kind=admin&limit=10&model=m", headers=self.headers).status_code, 200)
         self.audit.list_records.assert_called_once_with("admin", 10, None, model="m")
+        self.assertEqual(self.client.get("/admin/logs?kind=credit&type=income", headers=self.headers).status_code, 200)
+        self.audit.list_records.assert_called_with("credit", 50, None, type="income")
         self.assertEqual(self.client.get("/admin/logs/missing", headers=self.headers).status_code, 404)
         self.assertEqual(self.client.get("/admin/dashboard?days=7", headers=self.headers).status_code, 200)
         self.assertEqual(self.client.get("/admin/dashboard?days=8", headers=self.headers).status_code, 400)

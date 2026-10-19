@@ -23,6 +23,7 @@ import {
   ResourceState,
 } from "../components";
 import { eventActionLabel, eventKindLabel } from "../values";
+import { CreditFilters, CreditRow, useAccountNames } from "../CreditChanges";
 import { profiles } from "./Models";
 import s from "../ui.module.scss";
 import { t, useT } from "../i18n";
@@ -43,6 +44,7 @@ const emptyFilters = {
   profile: "",
   status: "",
   client_ip: "",
+  type: "",
   search: "",
 };
 const outcomeLabels: Record<string, string> = {
@@ -56,6 +58,7 @@ export function Logs() {
   const [kind, setKind] = useState("request");
   const [draft, setDraft] = useState(emptyFilters);
   const [filters, setFilters] = useState(emptyFilters);
+  const names = useAccountNames(kind === "credit");
   const [cursors, setCursors] = useState<string[]>([]);
   const [detail, setDetail] = useState<RecordValue | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -125,6 +128,7 @@ export function Logs() {
           ["request", t("logs.tab.request")],
           ["runtime", t("logs.tab.runtime")],
           ["admin", t("logs.kind.admin")],
+          ["credit", t("logs.tab.credit")],
         ].map(([value, label]) => (
           <button
             key={value}
@@ -149,7 +153,9 @@ export function Logs() {
             ? t("logs.panel.request")
             : kind === "runtime"
               ? t("logs.tab.runtime")
-              : t("logs.tab.admin")
+              : kind === "credit"
+                ? t("logs.panel.credit")
+                : t("logs.tab.admin")
         }
         hint={t("logs.perPage")}
       >
@@ -204,6 +210,14 @@ export function Logs() {
               </select>
             </>
           )}
+          {kind === "credit" && (
+            <CreditFilters
+              credential={draft.credential}
+              type={draft.type}
+              names={names}
+              onChange={(patch) => setDraft({ ...draft, ...patch })}
+            />
+          )}
           <input
             aria-label={t("logs.filter.search")}
             placeholder={t("logs.placeholder.search")}
@@ -235,10 +249,20 @@ export function Logs() {
                 <thead>
                   <tr>
                     <th>{t("logs.col.time")}</th>
-                    <th>
-                      {kind === "request" ? t("logs.col.modelProfile") : t("logs.col.action")}
-                    </th>
-                    <th>{t("logs.col.status")}</th>
+                    {kind === "credit" ? (
+                      <>
+                        <th>{t("logs.col.changeAccount")}</th>
+                        <th>{t("logs.col.changeAmount")}</th>
+                        <th>{t("logs.col.changeSource")}</th>
+                      </>
+                    ) : (
+                      <>
+                        <th>
+                          {kind === "request" ? t("logs.col.modelProfile") : t("logs.col.action")}
+                        </th>
+                        <th>{t("logs.col.status")}</th>
+                      </>
+                    )}
                     {kind === "request" && (
                       <>
                         <th>{t("logs.col.duration")}</th>
@@ -260,49 +284,55 @@ export function Logs() {
                             : text(item.started_at)}
                           <small className={s.mono}>{text(item.id)}</small>
                         </td>
-                        <td>
-                          <strong title={kind === "request" ? undefined : text(item.action)}>
-                            {text(
-                              kind === "request"
-                                ? item.model
-                                : eventActionLabel(item.action)
-                                  ? t(eventActionLabel(item.action)!)
-                                  : item.action,
-                            )}
-                          </strong>
-                          <small title={kind === "request" ? undefined : text(item.kind)}>
-                            {text(
-                              kind === "request"
-                                ? item.profile
-                                : eventKindLabel(item.kind)
-                                  ? t(eventKindLabel(item.kind)!)
-                                  : item.kind,
-                            )}
-                          </small>
-                          {kind === "request" && item.client_ip ? (
-                            <small className={s.mono}>{text(item.client_ip)}</small>
-                          ) : null}
-                        </td>
-                        <td>
-                          <Badge
-                            tone={
-                              outcome === "success"
-                                ? "good"
-                                : outcome === "error"
-                                  ? "bad"
-                                  : outcome === "warning"
-                                    ? "warn"
-                                    : "neutral"
-                            }
-                          >
-                            {(typeof outcome === "string"
-                              ? t(outcomeLabels[outcome])
-                              : undefined) ?? text(outcome ?? item.level ?? item.status)}
-                          </Badge>
-                          {item.status_code !== undefined && (
-                            <small>HTTP {text(item.status_code)}</small>
-                          )}
-                        </td>
+                        {kind === "credit" ? (
+                          <CreditRow item={item} names={names} />
+                        ) : (
+                          <>
+                            <td>
+                              <strong title={kind === "request" ? undefined : text(item.action)}>
+                                {text(
+                                  kind === "request"
+                                    ? item.model
+                                    : eventActionLabel(item.action)
+                                      ? t(eventActionLabel(item.action)!)
+                                      : item.action,
+                                )}
+                              </strong>
+                              <small title={kind === "request" ? undefined : text(item.kind)}>
+                                {text(
+                                  kind === "request"
+                                    ? item.profile
+                                    : eventKindLabel(item.kind)
+                                      ? t(eventKindLabel(item.kind)!)
+                                      : item.kind,
+                                )}
+                              </small>
+                              {kind === "request" && item.client_ip ? (
+                                <small className={s.mono}>{text(item.client_ip)}</small>
+                              ) : null}
+                            </td>
+                            <td>
+                              <Badge
+                                tone={
+                                  outcome === "success"
+                                    ? "good"
+                                    : outcome === "error"
+                                      ? "bad"
+                                      : outcome === "warning"
+                                        ? "warn"
+                                        : "neutral"
+                                }
+                              >
+                                {(typeof outcome === "string"
+                                  ? t(outcomeLabels[outcome])
+                                  : undefined) ?? text(outcome ?? item.level ?? item.status)}
+                              </Badge>
+                              {item.status_code !== undefined && (
+                                <small>HTTP {text(item.status_code)}</small>
+                              )}
+                            </td>
+                          </>
+                        )}
                         {kind === "request" && (
                           <>
                             <td>{metric(item.duration_ms)} ms</td>

@@ -893,6 +893,58 @@ def _solvent_row(row: dict | None) -> bool:
         return False
 
 
+def _segment_key(segment: dict) -> tuple:
+    expires = segment.get("expires_at")
+    return (expires is None, expires or 0, segment.get("package_code") or segment.get("source") or "积分")
+
+
+def balance_changes(previous: dict, current: dict, now: float | None = None) -> list[dict]:
+    """Explain one balance refresh as income, consumption, expiry and adjustment rows.
+
+    Packages are matched by code and expiry. Consumption across packages folds into one row,
+    and an adjustment absorbs any remainder so the rows always sum to the balance delta. An
+    incomparable pair (no earlier balance, a partial page, an enterprise quota or a site
+    change) yields nothing rather than a fabricated change.
+    """
+    if (not previous or previous.get("partial") or current.get("partial")
+            or previous.get("enterprise") or current.get("enterprise")
+            or bool(previous.get("intl")) != bool(current.get("intl"))):
+        return []
+    try:
+        before, after = float(previous["credits"]), float(current["credits"])
+    except (KeyError, TypeError, ValueError):
+        return []
+    now = time.time() if now is None else now
+    old = {_segment_key(s): s for s in previous.get("segments") or []}
+    new = {_segment_key(s): s for s in current.get("segments") or []}
+    changes, consumed = [], 0.0
+
+    def add(kind, delta, segment=None):
+        if abs(delta) >= 0.005:
+            segment = segment or {}
+            changes.append({"type": kind, "delta": round(delta, 2), "balance": round(after, 2),
+                            "source": segment.get("source"), "package_code": segment.get("package_code") or None,
+                            "expires_at": segment.get("expires_at")})
+
+    for key in sorted(old.keys() | new.keys()):
+        was, kept = old.get(key), new.get(key)
+        if kept is None:
+            # A package leaves the list once it expires or is spent down to zero.
+            if was.get("expires_at") is not None and was["expires_at"] <= now:
+                add("expire", -float(was["remaining"]), was)
+            else:
+                consumed += float(was["remaining"])
+            continue
+        total = float(kept.get("total") or kept["remaining"])
+        remaining_before = float(was["remaining"]) if was else 0.0
+        granted = max(total - (float(was.get("total") or was["remaining"]) if was else 0.0), 0.0)
+        add("income", granted, kept)
+        consumed += max(remaining_before + granted - float(kept["remaining"]), 0.0)
+    add("consume", -consumed)
+    add("adjust", after - before - sum(change["delta"] for change in changes))
+    return changes
+
+
 class CreditLedger:
     """Persist per-credential check-in and balance snapshots for expiry-aware scheduling."""
 
@@ -981,11 +1033,13 @@ class CreditLedger:
 
     # Credit balances
 
-    def update_credits(self, cred_id: str, result: dict):
+    def update_credits(self, cred_id: str, result: dict) -> list[dict]:
+        """Store the new balance and return how it differs from the previous one."""
         with self._lock:
             # Snapshot before mutating: _entry may hand back the very row read here.
             was_solvent = _solvent_row(self._data["creds"].get(cred_id))
-            had_balance_row = bool((self._data["creds"].get(cred_id) or {}).get("credits"))
+            previous = deepcopy((self._data["creds"].get(cred_id) or {}).get("credits") or {})
+            had_balance_row = bool(previous)
             e = self._entry(cred_id)
             e["credits"] = {
                 "credits": result.get("credits"),
@@ -1006,6 +1060,7 @@ class CreditLedger:
             if not had_balance_row or _solvent_row({"credits": e["credits"]}) != was_solvent:
                 self.routing_revision = next(_LEDGER_REVISION)
             self._save()
+            return balance_changes(previous, e["credits"])
 
     def note_error(self, cred_id: str, message: str):
         with self._lock:

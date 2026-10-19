@@ -85,6 +85,62 @@ describe("request client metadata", () => {
   });
 });
 
+describe("credit changes tab", () => {
+  it("shows signed changes per account and filters by account and type", async () => {
+    const account = "a".repeat(64);
+    const get = vi.spyOn(api, "get").mockResolvedValue({
+      data: { credentials: [{ account_key: account, name: "主账号.info" }] },
+    });
+    vi.mocked(useResource).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "credit-1",
+            kind: "credit",
+            action: "credit.income",
+            started_at: 1,
+            details: {
+              credential: account,
+              delta: 500,
+              balance: 530,
+              source: "体验积分",
+              expires_at: 2e9,
+            },
+          },
+          {
+            id: "credit-2",
+            kind: "credit",
+            action: "credit.consume",
+            started_at: 2,
+            details: { credential: "b".repeat(64), delta: -70.5, balance: 30 },
+          },
+        ],
+        has_more: false,
+        next_cursor: null,
+      },
+      loading: false,
+      error: null,
+      reload: vi.fn(),
+    });
+    render(<Logs />);
+    await act(async () => fireEvent.click(screen.getByRole("tab", { name: "积分变动" })));
+    expect(get).toHaveBeenCalledWith("/credentials", expect.anything());
+    expect(screen.getByTitle("credit.income").textContent).toBe("积分入账");
+    expect(screen.getByTitle(account).textContent).toBe("主账号.info");
+    expect(screen.getByTitle("b".repeat(64)).textContent).toBe("bbbbbbbb");
+    expect(screen.getByText("+500")).toBeTruthy();
+    expect(screen.getByText("-70.5")).toBeTruthy();
+    expect(screen.getByText("体验积分")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("筛选账号"), { target: { value: account } });
+    fireEvent.change(screen.getByLabelText("筛选变动类型"), { target: { value: "income" } });
+    fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
+    const call = vi.mocked(useResource).mock.calls.at(-1)![0] as string;
+    expect(call).toContain("kind=credit");
+    expect(call).toContain(`credential=${account}`);
+    expect(call).toContain("type=income");
+  });
+});
+
 describe("log detail request lifetime", () => {
   it("does not reopen a closed drawer when its response arrives", async () => {
     const request = pending();

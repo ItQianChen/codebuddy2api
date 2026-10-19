@@ -250,6 +250,7 @@ export function profileLabel(value: string) {
 const eventKinds: Record<string, MessageKey> = {
   runtime: "logs.kind.runtime",
   admin: "logs.kind.admin",
+  credit: "logs.kind.credit",
 };
 const eventActions: Record<string, MessageKey> = {
   credits: "logs.action.credits",
@@ -305,6 +306,10 @@ const eventActions: Record<string, MessageKey> = {
   "models.rate_probe": "logs.action.models_rate_probe",
   "models.scan": "logs.action.models_scan",
   trial: "logs.action.trial",
+  "credit.income": "logs.action.credit_income",
+  "credit.consume": "logs.action.credit_consume",
+  "credit.expire": "logs.action.credit_expire",
+  "credit.adjust": "logs.action.credit_adjust",
 };
 export function eventActionLabel(action: unknown) {
   return typeof action === "string" ? ownLabel(eventActions, action) : undefined;
