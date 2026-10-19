@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -115,22 +116,28 @@ class HousekeepConcurrencyTests(unittest.TestCase):
             "model_cache": cache, "housekeep_concurrency": 3,
             "aggregate_catalog": converter.AggregateCatalog(ttl=3600)}))
 
+        spans, lock = [], threading.Lock()
+
         def slow_fetch(_token, **_kwargs):
+            started = time.monotonic()
             time.sleep(0.05)
+            with lock:
+                spans.append((started, time.monotonic()))
             return {"picker": model("hy3"), "account": model("hy3")}
         with patch.object(converter.credits_mod, "fetch_model_scopes", side_effect=slow_fetch):
-            started = time.monotonic()
             converter.start_catalog_scan()
             for _ in range(300):
                 view = converter.catalog_scan_view()
                 if view["status"] != "running":
                     break
                 time.sleep(0.01)
-        elapsed = time.monotonic() - started
         self.assertEqual(view["status"], "completed")
         self.assertEqual(view["completed"], 6)
-        self.assertLess(elapsed, 6 * 0.05)  # Six 50 ms fetches on three workers are not serial.
-
+        # Overlapping fetch windows prove bounded concurrency; a serial regression keeps
+        # every span disjoint, so the check never depends on runner wall-clock jitter.
+        spans.sort()
+        self.assertTrue(any(spans[i][1] > spans[j][0]
+                            for i in range(len(spans)) for j in range(i + 1, len(spans))))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
