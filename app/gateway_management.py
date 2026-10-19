@@ -8,7 +8,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
-from . import checkin, daily_chat, growth_chains, growth_tasks, model_policy, travel, trial_management
+from . import checkin, daily_chat, growth_chains, growth_events, growth_tasks, model_policy, travel, trial_management
 
 
 class Management:
@@ -181,6 +181,9 @@ class Management:
         tasks = growth_tasks.merged_tasks(token, uid=headers.get("X-User-Id", ""),
                                           domain=headers.get("X-Domain", ""))
         state = self.CONFIG.get("control_store").snapshot()["credentials"].get(identity, {}) or {}
+        for task in tasks:
+            # Only codes with a chain can be switched or run; others are left to the claim sweep.
+            task["automatable"] = task["task_code"] in growth_chains.RUNNERS
         return {"supported": True, "auto_growth": model_policy.credential_auto_growth(self.CONFIG, entry),
                 "growth_auto": dict(state.get("growth_auto") or {}), "tasks": tasks}
 
@@ -212,26 +215,38 @@ class Management:
             nickname=(summary.get("email") or "").split("@")[0],
             headers=headers, lock_key=identity)
 
+    @staticmethod
+    def _run_growth_chain(code, ctx):
+        """Upstream failures become a readable outcome instead of an opaque 400."""
+        try:
+            return growth_chains.run(code, ctx)
+        except (growth_tasks.Failure, growth_events.Failure) as error:
+            return {"ok": False, "message": f"执行失败：{error}"}
+
     def admin_growth_auto(self, identity, task_code):
         """Run one task chain manually, regardless of its automation switch."""
-        if task_code not in growth_tasks.KNOWN_TASK_CODES:
-            raise HTTPException(400, "未知的成长任务")
-        ctx = self._growth_chain_context(identity)
-        result = growth_chains.run(task_code, ctx)
-        if result.get("skipped") and "没有此任务" in result.get("message", ""):
-            raise HTTPException(404, result["message"])
-        return result
+        if task_code not in growth_chains.RUNNERS:
+            raise HTTPException(400, "该任务暂无自动链")
+        return self._run_growth_chain(task_code, self._growth_chain_context(identity))
 
     def admin_growth_auto_all(self, identity):
-        """Run every task whose automation switch is on, plus the idempotent claim sweep."""
+        """Run every task whose switch is on, or every open task when none is switched on.
+
+        A manual run ignores the scheduled master switch.
+        """
         ctx = self._growth_chain_context(identity)
-        enabled = model_policy.growth_auto_tasks(self.CONFIG, {"account_key": identity})
-        results = []
-        for code in sorted(enabled & set(growth_chains.RUNNERS)):
-            outcome = growth_chains.run(code, ctx)
-            results.append({"task_code": code, **outcome})
-        return {"results": results,
-                "enabled": sorted(enabled)}
+        state = self.CONFIG["control_store"].snapshot()["credentials"].get(identity, {}) or {}
+        enabled = sorted(code for code, on in (state.get("growth_auto") or {}).items()
+                         if on is True and code in growth_chains.RUNNERS)
+        if not enabled:
+            try:
+                tasks = growth_tasks.merged_tasks(ctx.token, ctx.uid, ctx.domain)
+            except growth_tasks.Failure as error:
+                raise HTTPException(502, f"成长任务列表获取失败：{error}") from None
+            enabled = [task["task_code"] for task in tasks if task["task_code"] in growth_chains.RUNNERS
+                       and not task["claimed"] and not task["locked"]]
+        return {"results": [{"task_code": code, **self._run_growth_chain(code, ctx)} for code in enabled],
+                "enabled": enabled}
 
     @staticmethod
     def _daily_chat_view(store, identity, now):

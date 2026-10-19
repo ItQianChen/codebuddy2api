@@ -10,10 +10,12 @@ import unittest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from app.admin_api import install_admin
+from app import growth_tasks
 from app.control_store import ControlStore
+from app.gateway_management import Management
 
 
 class GrowthAdminTests(unittest.TestCase):
@@ -110,6 +112,50 @@ class GrowthAdminTests(unittest.TestCase):
         bad = self.client.post("/admin/credentials/growth-batch", headers=self.headers,
                                json={"ids": "acct", "task_codes": [], "enabled": True})
         self.assertEqual(bad.status_code, 400, bad.text)
+
+
+class GrowthManualRunTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(tempfile.mkdtemp())
+        self.store = ControlStore(root / "control.sqlite3")
+        self.addCleanup(self.store.close)
+        self.management = Management(SimpleNamespace(CONFIG={"control_store": self.store}))
+        context = patch.object(Management, "_growth_chain_context",
+                               return_value=SimpleNamespace(token="t", uid="u", domain="d"))
+        context.start()
+        self.addCleanup(context.stop)
+
+    def test_auto_all_runs_enabled_switches_even_with_master_off(self):
+        self.store.set_growth_auto("acct", {"chat_5": True, "skill_1": True, "expert_5": False})
+        self.store.set_auto_growth("acct", False)
+        with patch("app.growth_chains.run", return_value={"ok": True, "message": "done"}) as run:
+            result = self.management.admin_growth_auto_all("acct")
+        self.assertEqual([call.args[0] for call in run.call_args_list], ["chat_5", "skill_1"])
+        self.assertEqual(result["enabled"], ["chat_5", "skill_1"])
+
+    def test_auto_all_falls_back_to_every_open_task_when_no_switch_is_on(self):
+        self.store.set_growth_auto("acct", {"chat_5": False})
+        tasks = [{"task_code": "skill_1", "claimed": False, "locked": False},
+                 {"task_code": "chat_5", "claimed": True, "locked": False},
+                 {"task_code": "expert_5", "claimed": False, "locked": True},
+                 {"task_code": "wb_wechat_oa_subscribe_task", "claimed": False, "locked": False}]
+        with patch("app.growth_tasks.merged_tasks", return_value=tasks), \
+                patch("app.growth_chains.run", return_value={"ok": True, "message": "done"}) as run:
+            result = self.management.admin_growth_auto_all("acct")
+        self.assertEqual([call.args[0] for call in run.call_args_list], ["skill_1"])
+        self.assertEqual(result["enabled"], ["skill_1"])
+
+    def test_upstream_failure_is_reported_per_task(self):
+        self.store.set_growth_auto("acct", {"chat_5": True, "skill_1": True})
+        outcomes = [growth_tasks.Failure("http", 502), {"ok": True, "message": "done"}]
+        with patch("app.growth_chains.run", side_effect=outcomes):
+            result = self.management.admin_growth_auto_all("acct")
+        self.assertEqual([item["ok"] for item in result["results"]], [False, True])
+        self.assertIn("执行失败", result["results"][0]["message"])
+
+    def test_single_run_rejects_codes_without_chain(self):
+        with self.assertRaises(HTTPException):
+            self.management.admin_growth_auto("acct", "wb_wechat_oa_subscribe_task")
 
 
 if __name__ == "__main__":

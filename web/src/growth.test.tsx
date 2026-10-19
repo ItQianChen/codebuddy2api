@@ -77,6 +77,7 @@ const growthView = {
       claimable: true,
       claimed: false,
       group: "behavior",
+      automatable: true,
     },
     {
       task_code: "Model_chat_GLM5.2",
@@ -91,6 +92,22 @@ const growthView = {
       claimable: false,
       claimed: false,
       group: "chat",
+      automatable: true,
+    },
+    {
+      task_code: "wb_wechat_oa_subscribe_task",
+      title: "关注公众号",
+      description: "",
+      credit: 50,
+      energy: 0,
+      locked: false,
+      accept_status: "not_accepted",
+      target: 1,
+      current: 0,
+      claimable: false,
+      claimed: false,
+      group: "other",
+      automatable: false,
     },
   ],
 };
@@ -192,4 +209,98 @@ it("syncs the account's task switches to every other selected account", async ()
     task_codes: ["chat_5"],
     enabled: true,
   });
+});
+
+it("reflects the master switch from the reloaded credential row", async () => {
+  const { rows } = fixture();
+  vi.spyOn(api, "get").mockResolvedValue({ data: growthView } as never);
+  const { rerender } = render(<Credentials />);
+  openDetail("cn-work.info");
+  const master = await screen.findByRole("switch", { name: "自动成长补领 cn-work.info" });
+  expect(master).toHaveProperty("checked", true);
+  rows[0] = { ...rows[0], auto_growth: false };
+  vi.mocked(useResource).mockReturnValue({
+    data: [...rows],
+    reload: vi.fn(),
+    loading: false,
+    error: null,
+  });
+  rerender(<Credentials />);
+  expect(screen.getByRole("switch", { name: "自动成长补领 cn-work.info" })).toHaveProperty(
+    "checked",
+    false,
+  );
+});
+
+it("selects every automatable task and hides chainless tasks", async () => {
+  fixture();
+  vi.spyOn(api, "get").mockResolvedValue({ data: growthView } as never);
+  const patch = vi.spyOn(api, "patch").mockResolvedValue({ data: { id: "cnwork" } } as never);
+  render(<Credentials />);
+  openDetail("cn-work.info");
+  const selectAll = await screen.findByRole("button", { name: "全选任务开关 cn-work.info" });
+  expect(screen.queryByText("关注公众号")).toBeNull();
+  await act(async () => fireEvent.click(selectAll));
+  expect(patch).toHaveBeenCalledWith("/credentials/cnwork", {
+    growth_auto: { chat_5: true, "Model_chat_GLM5.2": true },
+  });
+  expect(await screen.findByRole("button", { name: "全不选任务开关 cn-work.info" })).toBeTruthy();
+});
+
+it("explains an empty run-all instead of reporting zero tasks", async () => {
+  fixture();
+  vi.spyOn(api, "get").mockResolvedValue({ data: growthView } as never);
+  vi.spyOn(api, "post").mockResolvedValue({ data: { results: [], enabled: [] } } as never);
+  render(<Credentials />);
+  openDetail("cn-work.info");
+  const runAll = await screen.findByRole("button", { name: "全部执行 cn-work.info" });
+  await act(async () => fireEvent.click(runAll));
+  expect(await screen.findByText("没有可执行的任务（均已领取或未解锁）")).toBeTruthy();
+});
+
+it("marks claimed tasks on the button and locks their switch", async () => {
+  fixture();
+  const claimedView = {
+    ...growthView,
+    tasks: growthView.tasks.map((task) =>
+      task.task_code === "chat_5" ? { ...task, claimed: true, claimable: false } : task,
+    ),
+  };
+  vi.spyOn(api, "get").mockResolvedValue({ data: claimedView } as never);
+  const patch = vi.spyOn(api, "patch").mockResolvedValue({ data: { id: "cnwork" } } as never);
+  render(<Credentials />);
+  openDetail("cn-work.info");
+  const button = await screen.findByRole("button", { name: "一键完成对话活跃补报 cn-work.info" });
+  expect(button.textContent).toBe("已领取");
+  expect(button).toHaveProperty("disabled", true);
+  expect(screen.getByRole("switch", { name: "自动对话活跃补报 cn-work.info" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+  await act(async () =>
+    fireEvent.click(screen.getByRole("button", { name: "全选任务开关 cn-work.info" })),
+  );
+  expect(patch).toHaveBeenCalledWith("/credentials/cnwork", {
+    growth_auto: { chat_5: true, "Model_chat_GLM5.2": true },
+  });
+});
+
+it("shows locked tasks as a disabled button with the unlock hint on hover", async () => {
+  fixture();
+  const lockedView = {
+    ...growthView,
+    tasks: growthView.tasks.map((task) =>
+      task.task_code === "Model_chat_GLM5.2" ? { ...task, locked: true } : task,
+    ),
+  };
+  vi.spyOn(api, "get").mockResolvedValue({ data: lockedView } as never);
+  render(<Credentials />);
+  openDetail("cn-work.info");
+  const button = await screen.findByRole("button", {
+    name: "一键完成GLM-5.2 真实对话 cn-work.info",
+  });
+  expect(button.textContent).toBe("未解锁");
+  expect(button).toHaveProperty("disabled", true);
+  expect(button.parentElement?.getAttribute("title")).toBe("按官方节奏逐日开放");
+  expect(screen.queryByText(/未解锁（/)).toBeNull();
 });
