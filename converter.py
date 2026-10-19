@@ -1735,10 +1735,11 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                 _sync_error(pool, ledger, entry, generation, "checkin", error)
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
-        if checkin and not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
+        if not travel.supported(entry.get("profile"), entry.get("enterprise") is True):
             # The exemption is terminal, so keep the ledger honest instead of leaving the
-            # previous upstream refusal as this account's current travel state. A stored
-            # notice is only rewritten when it differs, so the sweep stays a no-op after.
+            # previous upstream refusal as this account's current travel state. This is not
+            # tied to check-in: a manual sync (checkin=False) must correct the row too.
+            # A stored notice is only rewritten when it differs, so the sweep stays a no-op.
             notice = travel.unavailable(entry.get("profile"), entry.get("enterprise") is True)
             if not pool.apply_if_current(cm, generation, lambda: travel.clear_unsupported(ledger, cid, notice)):
                 failed.add(cid)
