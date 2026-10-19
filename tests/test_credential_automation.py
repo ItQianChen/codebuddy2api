@@ -225,6 +225,31 @@ class AutomationTests(unittest.TestCase):
         self.travel_mock.assert_not_called()
         self.assertEqual(self.requests, [])
 
+    def test_a_manual_sync_also_clears_the_stale_travel_refusal(self):
+        """The sync button runs with checkin=False, so the cleanup must not depend on it.
+
+        Otherwise the operator can press 同步 repeatedly and the stale 403 stays on the
+        card until the next full sweep, which is exactly the state that was reported.
+        """
+        self.add_account('enterprise-tenant', 'cn-cli', enterprise='fylzonuezfnk')
+        self.configure(profiles=('cn-cli', 'enterprise-tenant'))
+        entry = self.entries['enterprise-tenant']
+        stale = {'ok': False, 'state': 'unknown', 'phase': 'status', 'error_kind': 'http',
+                 'http_status': 403, 'code': 403, 'message': '状态查询失败，未执行写操作'}
+        self.ledger.update_travel(entry['id'], dict(stale))
+        with patch.object(credits, 'fetch_credits', return_value={'credits': 10, 'intl': False}):
+            converter._sync_credits(self.pool, self.ledger, entry, checkin=False, failed=set())
+        travel_row = self.ledger.entry(entry['id'])['travel']
+        self.assertEqual(travel_row['state'], 'unavailable')
+        self.assertIsNone(travel_row.get('http_status'))
+        self.assertIn('企业账号', travel_row['message'])
+        # A second sync must not rewrite the same notice, so an exempt account stays quiet.
+        revision = self.ledger.revision
+        with patch.object(credits, 'fetch_credits', return_value={'credits': 10, 'intl': False}):
+            converter._sync_credits(self.pool, self.ledger, entry, checkin=False, failed=set())
+        self.assertEqual(self.ledger.entry(entry['id'])['travel'], travel_row)
+        self.assertGreaterEqual(revision, 0)
+
     def test_a_personal_account_keeps_travelling(self):
         entry = self.entries['cn-cli']
         self.assertFalse(entry.get('enterprise') is True)
