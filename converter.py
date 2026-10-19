@@ -89,7 +89,7 @@ from app.startup import allows_open_noauth, load_startup_env, run_server
 from app.site_routing import (DOMESTIC, INTERNATIONAL, PROFILE_ENDPOINTS, site_for_auth, site_for_headers,
                               profile_for_auth, profile_for_headers, profile_region, profile_product,
                               profile_site, chat_url_for_headers, search_url_for_headers, refresh_url_for_auth)
-from app import mcp_server, web_search
+from app import dsml, mcp_server, web_search
 from app.inbound_limits import anthropic_path
 from app.client_profiles import (CLI_VERSION, CLI_USER_AGENT, credential_headers, catalog_cache_key,
                                  account_key, canonical_uid, enterprise_id_of, identity_email,
@@ -4055,6 +4055,18 @@ def _hungup_response(rid, model_name, t0):
     return Response(status_code=204)
 
 
+def _note_dsml_observation(rid, repairer):
+    """Mirror the panel's two-line convention: distinguish 'not seen' from 'seen but rejected'."""
+    if repairer.converted:
+        observe_attempt("dsml_repaired", calls=repairer.converted, blocks=repairer.seen, known=repairer.known)
+        _log(f"[{rid}] 🔧 从正文还原 {repairer.converted} 个原生工具调用 (known={repairer.known})")
+    elif repairer.seen:
+        observe_attempt("dsml_rejected", blocks=repairer.seen, known=repairer.known)
+        _log(f"[{rid}] ⚠ 识别到 {repairer.seen} 个原生标记块但未还原 (known={repairer.known})")
+    if repairer.saw_opensource:
+        observe_attempt("native_markup_opensource", known=repairer.known)
+
+
 async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *, filter_retry=False,
                              max_collect_bytes=None):
     """Collect with bounded repair and one eligible filter retry using a frozen request budget."""
@@ -4101,6 +4113,16 @@ async def _fetch_checked_chat(url, headers, body, model_name, rid, cred=None, *,
             _note_content_filter(rid, model_name, final=True)
 
         calls = result["choices"][0]["message"].get("tool_calls")
+        if not detector.detected:
+            allowed = dsml.tool_name_allowlist(body)
+            converted, seen, _rejected = dsml.repair_aggregated(result, allowed)
+            if converted:
+                observe_attempt("dsml_repaired", calls=converted, blocks=seen, known=len(allowed))
+                _log(f"[{rid}] 🔧 从正文还原 {converted} 个原生工具调用 (known={len(allowed)})")
+                calls = result["choices"][0]["message"].get("tool_calls")
+            elif seen:
+                observe_attempt("dsml_rejected", blocks=seen, known=len(allowed))
+                _log(f"[{rid}] ⚠ 识别到 {seen} 个原生标记块但未还原 (known={len(allowed)})")
         if _tool_calls_healthy(calls, body) and (detector.detected or _tool_choice_satisfied(calls, body)):
             observe_usage(result.get("usage") or {})
             return result
@@ -4154,6 +4176,7 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
     # Realtime output is never copied into the retired raw-text preview log.
     budget = 0 if policy.realtime else (
         CONFIG["log_body_limit"] if CONFIG.get("log_path") else 0)
+    repairer = dsml.SSERepairer(dsml.tool_name_allowlist(body))
     try:
         async with _backend_stream(url, headers, body, rid=rid, model_name=model_name) as response:
             if response.status_code != 200:
@@ -4162,16 +4185,24 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
             else:
                 _note_cred_model_ok(cred, body.get("model"))
             async for line in response.aiter_lines():
-                tracker.feed_line(line)
-                if tracker.done or tracker.finish_reason:
-                    completed()  # Never expose a success marker before terminal validation.
-                remaining = budget - len(preview)
-                if remaining > 0:
-                    preview.extend((line[:remaining] + "\n").encode("utf-8")[:remaining])
-                yield line
-                if tracker.done:
-                    yield ""
+                broken = False
+                for out_line in repairer.feed(line):
+                    tracker.feed_line(out_line)
+                    if tracker.done or tracker.finish_reason:
+                        completed()  # Never expose a success marker before terminal validation.
+                    remaining = budget - len(preview)
+                    if remaining > 0:
+                        preview.extend((out_line[:remaining] + "\n").encode("utf-8")[:remaining])
+                    yield out_line
+                    if tracker.done:
+                        yield ""
+                        broken = True
+                if broken:
                     break
+        for out_line in repairer.flush():   # 上游未发 DONE 就断流时，残留字节同样交还
+            if not (tracker.done or tracker.finish_reason):
+                tracker.feed_line(out_line)
+            yield out_line
         merged = completed()
     finally:
         if tracker.usage:
@@ -4179,6 +4210,7 @@ async def _chat_sse_lines(url, headers, body, model_name, t0, rid, cred=None, *,
     if tracker.filter_detector.detected:
         _note_content_filter(rid, model_name, final=True)
         return
+    _note_dsml_observation(rid, repairer)
     _log(f"[{rid}] ◀ RESPONSE {model_name} | {time.time() - t0:.1f}s | stream finish={merged['finish_reason']}"
          + f" | tokens={(merged['usage'] or {}).get('total_tokens', '?')}")
     _log_text_body(f"[{rid}] RESPONSE SSE PREVIEW", preview.decode("utf-8", "replace"))
