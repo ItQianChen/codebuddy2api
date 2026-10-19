@@ -54,7 +54,7 @@ from app.adapters.anthropic_adapter import (
 from app import auth_oauth
 from app.settings import SCHEMA
 from app import trial_rewards
-from app import buddy, daily_chat, checkin as checkin_service, model_policy, travel
+from app import buddy, daily_chat, growth_chains, growth_tasks, checkin as checkin_service, model_policy, travel
 from app.credential_cooldowns import CredentialCooldowns
 from app.model_blocks import ModelBlocks
 from app.usage_snapshots import UsageSnapshots
@@ -1758,6 +1758,32 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                 buddy.daily_warning(CONFIG, entry.get("account_key"), entry.get("profile"), trip)
             except Exception as error:
                 _sync_error(pool, ledger, entry, generation, "travel", error)
+        if not model_policy.credential_enabled(CONFIG, entry):
+            return None
+        # A-layer growth sweep: pure accept/claim, no behavior chains, so it rides the
+        # hourly pass. Enabled chains (growth_auto switches) are driven by the same
+        # module once their behavior layers land; the claim layer alone needs no consent.
+        if checkin and model_policy.credential_auto_growth(CONFIG, entry):
+            try:
+                summary = growth_tasks.sweep_account(token, uid=uid, domain=domain)
+                if summary.get("claimed") or summary.get("errors"):
+                    _log(f"[growth] {Path(cid).name}: claimed={len(summary.get('claimed') or [])} "
+                         f"accepted={len(summary.get('accepted') or [])} +{summary.get('credit', 0)}c "
+                         f"+{summary.get('energy', 0)}e errors={summary.get('errors', 0)}")
+            except Exception as error:
+                _sync_error(pool, ledger, entry, generation, "growth", error)
+            enabled = model_policy.growth_auto_tasks(CONFIG, entry) & set(growth_chains.RUNNERS)
+            chain_base = PROFILE_ENDPOINTS[profile_for_headers(headers)]
+            for code in sorted(enabled):
+                try:
+                    ctx = growth_chains.Context(
+                        base=chain_base, token=token, uid=uid, domain=domain,
+                        headers=headers, lock_key=entry.get("account_key") or cid)
+                    outcome = growth_chains.run(code, ctx)
+                    if outcome.get("skipped") or outcome.get("claimed"):
+                        _log(f"[growth] {Path(cid).name} {code}: {outcome.get('message', '')}")
+                except Exception as error:
+                    _sync_error(pool, ledger, entry, generation, f"growth:{code}", error)
         if not model_policy.credential_enabled(CONFIG, entry):
             return None
         # A daily-activity turn spends credits on the account and is opt-in, so it runs

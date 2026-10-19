@@ -13,6 +13,7 @@ import uuid
 
 from .settings import validate_settings
 from .audit_store import _secure_path, safe_label
+from .growth_tasks import KNOWN_TASK_CODES as GROWTH_TASK_CODES
 
 
 class ConflictError(ValueError):
@@ -162,10 +163,18 @@ class ControlStore:
             validate_model(source, rule, data["models"], legacy_scopes=True)  # Preserve legacy scope intersections.
         for identity, metadata in data["credentials"].items():
             _identifier(identity, "账号指纹")
-            if (not isinstance(metadata, dict) or set(metadata) - {"enabled", "label", "auto_checkin", "auto_travel", "auto_daily_chat"}
+            growth = metadata.get("growth_auto")
+            if (not isinstance(metadata, dict)
+                    or set(metadata) - {"enabled", "label", "auto_checkin", "auto_travel",
+                                        "auto_daily_chat", "auto_growth", "growth_auto"}
                     or type(metadata.get("enabled")) is not bool
+                    or metadata.get("auto_growth") is not None and type(metadata["auto_growth"]) is not bool
                     or any(key in metadata and type(metadata[key]) is not bool for key in
-                           ("auto_checkin", "auto_travel", "auto_daily_chat"))):
+                           ("auto_checkin", "auto_travel", "auto_daily_chat"))
+                    or growth is not None and (
+                        not isinstance(growth, dict)
+                        or set(growth) - set(GROWTH_TASK_CODES)
+                        or any(type(value) is not bool for value in growth.values()))):
                 raise ValueError("管理数据库凭证元数据无效")
         return {"revision": row[0], **data}
 
@@ -284,6 +293,22 @@ class ControlStore:
             raise ValueError("auto_daily_chat 必须为布尔值")
         return self._update(None, lambda state: state["credentials"].setdefault(
             account_key, {"enabled": True}).update(auto_daily_chat=enabled))
+
+    def set_auto_growth(self, account_key, enabled):
+        _identifier(account_key, "账号指纹")
+        if type(enabled) is not bool:
+            raise ValueError("auto_growth 必须为布尔值")
+        return self._update(None, lambda state: state["credentials"].setdefault(
+            account_key, {"enabled": True}).update(auto_growth=enabled))
+
+    def set_growth_auto(self, account_key, mapping):
+        """Replace the per-task automation switches; unknown codes are rejected, not dropped."""
+        _identifier(account_key, "账号指纹")
+        if not isinstance(mapping, dict) or set(mapping) - set(GROWTH_TASK_CODES) \
+                or any(type(value) is not bool for value in mapping.values()):
+            raise ValueError("growth_auto 必须是 task_code 到布尔的映射")
+        return self._update(None, lambda state: state["credentials"].setdefault(
+            account_key, {"enabled": True}).update(growth_auto=mapping))
 
     def has_buddy_consent(self, identity, revision):
         _identifier(identity, "账号指纹")

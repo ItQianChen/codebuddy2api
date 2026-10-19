@@ -4,6 +4,7 @@ import { OAuth } from "../OAuth";
 import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
 import { Buddy, buddyConfirmation } from "../Buddy";
+import { GrowthTasks } from "../GrowthTasks";
 import { BalanceExpiry, CreditsPanel } from "../CreditsPanel";
 import { dateLabel, tokenExpiry } from "../credits";
 import {
@@ -514,7 +515,7 @@ export function Credentials() {
   };
   const preference = (
     credential: Credential,
-    field: "auto_checkin" | "auto_travel" | "auto_daily_chat",
+    field: "auto_checkin" | "auto_travel" | "auto_daily_chat" | "auto_growth",
     enabled: boolean,
   ) => {
     run(async () => {
@@ -533,7 +534,9 @@ export function Credentials() {
           ? "自动签到"
           : field === "auto_travel"
             ? "自动旅行"
-            : "自动活跃打卡";
+            : field === "auto_growth"
+              ? "自动成长补领"
+              : "自动活跃打卡";
       setNotice(`${label}已${enabled ? "开启" : "关闭"}；保存不会立即执行，后续维护按新设置执行。`);
     });
   };
@@ -896,6 +899,20 @@ export function Credentials() {
         {c.enabled === false && <small>账号停用期间不执行自动任务</small>}
         {c.trial_supported === true && c.trial != null && (
           <small>体验积分：{text(object(c.trial).message)}</small>
+        )}
+        {c.growth_supported === true && (
+          <>
+            <small>
+              <strong>成长计划</strong>
+              （仅国内个人账号；任务开关默认关闭，开启后自动推进）
+            </small>
+            <GrowthTasks
+              credential={c}
+              busy={busy}
+              onPreference={preference}
+              selectedIds={liveSelected}
+            />
+          </>
         )}
       </div>
     );
