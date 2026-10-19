@@ -5,7 +5,8 @@ The logs page shows an unmapped action as its raw code (``model.rate_probe``), a
 events kept shipping without one. This test reads the backend source instead of a
 hand-kept list: literal actions come from the emit calls themselves, and each dynamic
 family is expanded from the literal that bounds it in code (the PATCH field sets, the
-credential action allowlist, the runtime log components, the buddy stage helpers).
+credential action allowlist, the runtime log components, the buddy stage helpers,
+the credit change types).
 A dynamic emit site with no known expansion fails, so a new family cannot slip by.
 """
 import ast
@@ -16,6 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # Allow direct execution.
+
+from app.audit_store import CREDIT_CHANGES
 
 SOURCES = sorted([*(ROOT / "app").glob("*.py"), ROOT / "converter.py"])
 # Local helpers whose first stage argument becomes "buddy." + stage, and admin_api's
@@ -59,6 +62,7 @@ def _families(trees):
         ("admin_api.py", "credential."): {"credential." + field for field in fields},
         ("credential_actions.py", "credential."): {"credential." + action for action in actions},
         ("converter.py", None): set(components),   # Runtime events use the component as action.
+        ("converter.py", "credit."): {"credit." + change for change in CREDIT_CHANGES},
     }
 
 
@@ -116,7 +120,7 @@ class AuditActionLabelTests(unittest.TestCase):
     def test_scan_sees_the_known_families(self):
         actions, _ = emitted_actions()
         for action in ("model.updated", "credential.auto_growth", "credential.reset-cooldown",
-                       "buddy.departure", "buddy.task_chat", "housekeeper"):
+                       "buddy.departure", "buddy.task_chat", "housekeeper", "credit.expire"):
             self.assertIn(action, actions)
 
 

@@ -71,6 +71,34 @@ def safe_attempt(value: Any) -> dict:
     return result
 
 
+CREDIT_CHANGES = ("income", "consume", "expire", "adjust")
+
+
+def safe_credit_change(value: Any) -> dict:
+    """Signed credit deltas plus the upstream package label; never account names or tokens."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key in ("credential", "package_code"):
+        clean = safe_label(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    source = value.get("source")
+    # Package labels are short upstream display text, often Chinese, so they cannot be identifiers.
+    if (isinstance(source, str) and 0 < len(source) <= 60 and source.isprintable()
+            and not _SECRET.search(source)):
+        result["source"] = source
+    delta = value.get("delta")
+    if not isinstance(delta, bool) and isinstance(delta, (int, float)) and math.isfinite(delta) \
+            and abs(delta) <= 1e12:
+        result["delta"] = delta
+    for key in ("balance", "expires_at"):
+        clean = number(value.get(key))
+        if clean is not None:
+            result[key] = clean
+    return result
+
+
 def _secure_path(path: str | os.PathLike) -> Path:
     path = Path(os.path.abspath(os.fspath(path)))
     for ancestor in (*reversed(path.parents), path):
@@ -496,7 +524,7 @@ class AuditStore:
         self._db.execute("UPDATE detail_accounting SET cleanup_target=? WHERE id=1", (target,))
 
     def event(self, kind, action, details=None):
-        if kind not in ("runtime", "admin"):
+        if kind not in ("runtime", "admin", "credit"):
             raise ValueError("invalid event kind")
         started_at = time.time()
         def commit(db):
@@ -511,7 +539,8 @@ class AuditStore:
                     source.get("detail_generation", state["detail_generation"]) != state["detail_generation"]):
                 return {"ok": True, "recorded": False, "reason": "details_cleared"}
             data = {"id": event_id, "kind": kind, "action": safe_label(action),
-                    "started_at": started_at, "details": safe_attempt(source)}
+                    "started_at": started_at,
+                    "details": safe_credit_change(source) if kind == "credit" else safe_attempt(source)}
             payload = json.dumps(data)
             db.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (event_id, data["started_at"], kind, data["action"], payload, len(payload.encode()) + 128))
             self._prune()
@@ -519,7 +548,7 @@ class AuditStore:
         return self._run(commit, {"ok": False, "recorded": False}, write=True, dropped=True)
 
     def list_records(self, kind="request", limit=50, cursor=None, **filters):
-        if kind not in ("request", "runtime", "admin"):
+        if kind not in ("request", "runtime", "admin", "credit"):
             raise ValueError("invalid record kind")
         limit = max(1, min(int(limit), 200))
         # Expiry cleanup is incremental, but expired details are never visible.
@@ -548,6 +577,16 @@ class AuditStore:
                 column = "outcome" if status in ("success", "error", "cancelled") else "status_code"
                 clauses.append(f"{column}=?")
                 params.append(status)
+        if kind == "credit":
+            if filters.get("credential"):
+                clauses.append("json_extract(payload,'$.details.credential')=?")
+                params.append(filters["credential"])
+            change = filters.get("type")
+            if change:
+                if change not in CREDIT_CHANGES:
+                    raise ValueError("invalid credit change type")
+                clauses.append("action=?")
+                params.append("credit." + change)
         for key, op in (("since", ">="), ("until", "<=")):
             if filters.get(key) is not None:
                 clauses.append(f"started_at{op}?")

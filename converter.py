@@ -1821,9 +1821,12 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
                 enterprise_id=enterprise_id or "")
             if bool(balance.get("intl")) != (site == INTERNATIONAL):
                 raise ValueError("积分响应与凭据站点不一致")
-            if not pool.apply_if_current(cm, generation, lambda: ledger.update_credits(cid, balance)):
+            changes = []
+            if not pool.apply_if_current(cm, generation,
+                                         lambda: changes.extend(ledger.update_credits(cid, balance) or ())):
                 failed.add(cid)
                 return None
+            _record_credit_changes(entry.get("account_key"), changes)
             shown = "无限" if balance.get("unlimited") and balance.get("enterprise") else balance["credits"]
             _log(f"[credits] {Path(cid).name}: 站点 {site}，余额 {shown}")
         except credits_mod.AuthExpiredError:
@@ -1837,6 +1840,18 @@ def _sync_credits(pool, ledger, entry, *, checkin, failed, expected_identity=Non
         failed.add(cid)
         _sync_error(pool, ledger, entry, generation, "credits", error)
         return None
+
+
+def _record_credit_changes(identity, changes):
+    """Write each balance change to the audit log; auditing never fails a balance refresh."""
+    audit = CONFIG.get("audit_store")
+    if audit is None or not identity:
+        return
+    for change in changes:
+        try:
+            audit.event("credit", "credit." + change["type"], dict(change, credential=identity))
+        except Exception:
+            pass
 
 
 def _publish_model_cache():

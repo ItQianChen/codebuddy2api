@@ -403,6 +403,25 @@ class AuditStoreTests(unittest.TestCase):
         self.store.clear("details")
         self.assertEqual(self.store.event("admin", "credential_upload", {"event_id": "evt1"})["reason"], "duplicate")
 
+    def test_credit_changes_keep_signed_deltas_and_filter_by_account_and_type(self):
+        self.store.event("credit", "credit.income", {"credential": "a" * 64, "delta": 500.0, "balance": 530,
+                                                     "source": "体验积分", "package_code": "trial",
+                                                     "expires_at": 2e9, "token": "secret-token"})
+        self.store.event("credit", "credit.consume", {"credential": "b" * 64, "delta": -70.5, "balance": 30,
+                                                      "source": "Bearer sk-leak"})
+        income, consume = sorted(self.store.list_records("credit")["items"], key=lambda item: item["action"])[::-1]
+        self.assertEqual(income["details"], {"credential": "a" * 64, "package_code": "trial", "source": "体验积分",
+                                             "delta": 500.0, "balance": 530, "expires_at": 2e9})
+        self.assertEqual(consume["details"]["delta"], -70.5)
+        self.assertNotIn("source", consume["details"])
+        by_account = self.store.list_records("credit", credential="b" * 64)["items"]
+        self.assertEqual([item["action"] for item in by_account], ["credit.consume"])
+        self.assertEqual([item["action"] for item in self.store.list_records("credit", type="income")["items"]],
+                         ["credit.income"])
+        self.assertEqual(self.store.list_records("admin")["items"], [])
+        with self.assertRaises(ValueError):
+            self.store.list_records("credit", type="refund")
+
     def test_event_tickets_cannot_revive_cleared_details(self):
         pending = {"event_id": "pending-event", **self.store.ticket()}
         self.store.clear("details")

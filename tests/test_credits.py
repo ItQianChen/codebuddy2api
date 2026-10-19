@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 
 from app import credits
 from app.credits import (
-    AuthExpiredError, CreditLedger,
+    AuthExpiredError, CreditLedger, balance_changes,
     classify_checkin_result, token_issuer_origin, hosts_for_token,
     extract_segments, merge_segments, soonest_expiry,
 )
@@ -240,6 +240,51 @@ def test_ledger(tmp_path=None):
         snap = ledger2.snapshot()
         assert snap["c1"]["credits"]["credits"] == 300.0
     print("✅ test_ledger")
+
+
+def _balance(*segments, **flags):
+    return {"credits": round(sum(s["remaining"] for s in segments), 2), "segments": list(segments), **flags}
+
+
+def _segment(code, remaining, total=None, expires_at=2e9, source="包"):
+    return {"package_code": code, "source": source, "remaining": remaining,
+            "total": remaining if total is None else total, "expires_at": expires_at}
+
+
+def test_balance_changes_explain_income_consumption_and_expiry():
+    """Rows name each package grant and expiry, fold spending into one row and sum to the delta."""
+    now = 1_900_000_000
+    before = _balance(_segment("daily", 100, 100), _segment("old", 30, 50, expires_at=now - 60))
+    after = _balance(_segment("daily", 80, 100), _segment("trial", 450, 500, source="体验积分"))
+    changes = balance_changes(before, after, now=now)
+    # Packages are visited in expiry order; consumption across packages comes last as one row.
+    assert [(c["type"], c["delta"]) for c in changes] == [("expire", -30.0), ("income", 500.0), ("consume", -70.0)]
+    assert changes[1]["source"] == "体验积分" and changes[1]["package_code"] == "trial"
+    assert {c["balance"] for c in changes} == {530.0}
+    assert round(sum(c["delta"] for c in changes), 2) == round(after["credits"] - before["credits"], 2)
+    # A package that left the list before its expiry was spent down, not expired.
+    spent = balance_changes(_balance(_segment("a", 5)), _balance(), now=now)
+    assert [(c["type"], c["delta"]) for c in spent] == [("consume", -5.0)]
+    # A top-up of an existing package is income; a rise its totals cannot explain is an adjustment.
+    topped = balance_changes(_balance(_segment("a", 10, 20)), _balance(_segment("a", 25, 30)), now=now)
+    assert [(c["type"], c["delta"]) for c in topped] == [("income", 10.0), ("adjust", 5.0)]
+    assert balance_changes(_balance(_segment("a", 10)), _balance(_segment("a", 10)), now=now) == []
+    print("✅ test_balance_changes_explain_income_consumption_and_expiry")
+
+
+def test_balance_changes_skip_incomparable_snapshots():
+    """No earlier balance, a partial page, enterprise quota or a site change records nothing."""
+    after = _balance(_segment("a", 10))
+    for before, current in (({}, after), (_balance(partial=True), after), (_balance(), dict(after, partial=True)),
+                            (_balance(enterprise=True), after), (_balance(intl=True), after)):
+        assert balance_changes(before, current) == []
+    with tempfile.TemporaryDirectory() as td:
+        ledger = CreditLedger(Path(td) / "ledger.json")
+        assert ledger.update_credits("c1", after) == []   # First balance of a credential.
+        assert [c["type"] for c in ledger.update_credits("c1", _balance(_segment("a", 4)))] == ["consume"]
+        ledger.bind_identity("c1", "another-account")       # A rebound path starts over.
+        assert ledger.update_credits("c1", after) == []
+    print("✅ test_balance_changes_skip_incomparable_snapshots")
 
 
 def test_ledger_remove_and_entry():
@@ -1071,6 +1116,8 @@ if __name__ == "__main__":
     test_merge_and_sort_segments()
     test_soonest_expiry()
     test_ledger()
+    test_balance_changes_explain_income_consumption_and_expiry()
+    test_balance_changes_skip_incomparable_snapshots()
     test_ledger_remove_and_entry()
     test_ledger_threaded_entries()
     test_daily_checkin_http()
