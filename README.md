@@ -42,10 +42,13 @@ The template binds to localhost only. Configure HTTPS and restrict network acces
 |----------|----------|
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
+| MCP (web_search tool) | `http://127.0.0.1:8787/v1/mcp` |
+| REST web search | `POST http://127.0.0.1:8787/v1/search` |
 
 - **API key:** the same key used to sign in to the WebUI.
 - **Model:** a public ID from the WebUI or `GET /v1/models`.
 - All accounts share these URLs; no region parameter is needed. Anthropic SDKs append `/v1/messages` themselves, so leave it out of the Base URL.
+- The search endpoints run web searches only — no model calls. See [Web search](docs/clients.md#web-search).
 
 [Codex CLI, Claude Code / CC Switch and other client examples →](docs/clients.md)
 

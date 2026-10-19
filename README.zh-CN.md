@@ -42,10 +42,13 @@ Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/maiphucgiang/codebu
 |------|----------|
 | OpenAI Chat / Responses | `http://127.0.0.1:8787/v1` |
 | Anthropic Messages | `http://127.0.0.1:8787` |
+| MCP（web_search 工具） | `http://127.0.0.1:8787/v1/mcp` |
+| REST 联网搜索 | `POST http://127.0.0.1:8787/v1/search` |
 
 - **API Key**：与 WebUI 登录使用同一个密钥。
 - **模型**：使用 WebUI 中的对外 ID，或查询 `GET /v1/models`。
 - 国内、国际账号共用这些地址，无需额外的地域参数。Anthropic SDK 会自行追加 `/v1/messages`，不要把它写入 Base URL。
+- 搜索端点只做联网搜索，不调用模型，见[联网搜索](docs/clients.zh-CN.md#联网搜索)。
 
 [Codex CLI、Claude Code / CC Switch 等配置示例 →](docs/clients.zh-CN.md)
 

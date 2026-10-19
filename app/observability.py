@@ -15,9 +15,8 @@ import time
 from typing import Any
 
 from app.audit_store import AuditStore, METRICS, number, safe_agent, safe_attempt, safe_label
-from app.request_context import current_context, ensure_context
+from app.request_context import PATHS, current_context, ensure_context
 
-_PATHS = {"/v1/chat/completions": "chat", "/v1/responses": "responses", "/v1/messages": "messages"}
 _PARSE_LIMIT = 16384
 _META_HEADERS = ("user-agent", "x-forwarded-for", "x-real-ip")
 _proxy_networks: dict[str, tuple] = {}
@@ -147,6 +146,7 @@ class _Observation:
     body_finished: bool = False
     status: int | None = None
     streaming: bool = False
+    discarded: bool = False
     first_token_ms: float | None = None
     usage_priority: dict = field(default_factory=dict)
     usage_sources: dict = field(default_factory=dict)
@@ -213,6 +213,13 @@ class _Observation:
                     functions += [_mapping(_mapping(call).get("function")) for call in calls[:16]]
                 if meaningful or any(call.get("name") or call.get("arguments") for call in functions):
                     self.output()
+
+
+def observe_discard():
+    """Drop the current observation at submit time; for housekeeping traffic that must not pollute stats."""
+    observation = _current.get()
+    if observation is not None:
+        observation.discarded = True
 
 
 def observe_stream_mode(mode):
@@ -410,13 +417,13 @@ class AuditMiddleware:
             await self.app(scope, lifespan_receive, send)
             return
         if (self.store is None or scope.get("type") != "http" or scope.get("method") != "POST"
-                or scope.get("path") not in _PATHS):
+                or scope.get("path") not in PATHS):
             await self.app(scope, receive, send)
             return
         started, monotonic_start = time.time(), time.monotonic()
         observation = _Observation({"id": ensure_context(scope, self.config).request_id, "epoch": -1,
                                     "detail_generation": -1, "started_at": started,
-                                    "protocol": _PATHS[scope["path"]],
+                                    "protocol": PATHS[scope["path"]],
                                     **{key: None for key in METRICS}}, monotonic_start)
         observation.record.update(zip(("client_ip", "user_agent"),
                                       client_meta(scope, self.config.get("trusted_proxies")
@@ -477,35 +484,37 @@ class AuditMiddleware:
             observation.fail("application_error")
             raise
         finally:
-            try:
-                if not observation.body_finished and not cancelled and not observation.failed:
-                    observation.fail("incomplete_response")
-                if observation.streaming and not observation.terminal and not cancelled and not observation.failed:
-                    observation.fail("incomplete_stream")
-                outcome = "cancelled" if cancelled else (
-                    "error" if observation.failed or not observation.status or observation.status >= 400 else "success")
-                observation.record.update(status_code=observation.status, outcome=outcome,
-                                          streaming=observation.streaming,
-                                          duration_ms=(time.monotonic() - monotonic_start) * 1000,
-                                          first_token_ms=observation.first_token_ms,
-                                          attempts=observation.attempts)
-                if observation.parser_dropped:
-                    observation.record["attempts"] = observation.attempts + [{"stage": "observer", "code": "bounded_parse_skipped"}]
-                # Shield one bounded store operation from client cancellation.
-                # No upstream replay and no promise of delivery after process exit.
-                task = asyncio.create_task(asyncio.to_thread(self.store.record_request, observation.record))
-                self._pending.add(task)
-                task.add_done_callback(self._pending.discard)
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    # The thread continues; retain the task and consume its error.
-                    task.add_done_callback(self._submission_done)
-                    raise
-                except Exception:
-                    self._fault()
-            finally:
-                _current.reset(token)
+            _current.reset(token)
+            if not observation.discarded:
+                await self._submit(observation, monotonic_start, cancelled)
+
+    async def _submit(self, observation, monotonic_start, cancelled):
+        if not observation.body_finished and not cancelled and not observation.failed:
+            observation.fail("incomplete_response")
+        if observation.streaming and not observation.terminal and not cancelled and not observation.failed:
+            observation.fail("incomplete_stream")
+        outcome = "cancelled" if cancelled else (
+            "error" if observation.failed or not observation.status or observation.status >= 400 else "success")
+        observation.record.update(status_code=observation.status, outcome=outcome,
+                                  streaming=observation.streaming,
+                                  duration_ms=(time.monotonic() - monotonic_start) * 1000,
+                                  first_token_ms=observation.first_token_ms,
+                                  attempts=observation.attempts)
+        if observation.parser_dropped:
+            observation.record["attempts"] = observation.attempts + [{"stage": "observer", "code": "bounded_parse_skipped"}]
+        # Shield one bounded store operation from client cancellation.
+        # No upstream replay and no promise of delivery after process exit.
+        task = asyncio.create_task(asyncio.to_thread(self.store.record_request, observation.record))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The thread continues; retain the task and consume its error.
+            task.add_done_callback(self._submission_done)
+            raise
+        except Exception:
+            self._fault()
 
     def _submission_done(self, task):
         try:
