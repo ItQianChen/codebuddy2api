@@ -59,6 +59,22 @@ function fixture() {
   return { rows, reload };
 }
 
+function job(overrides: Record<string, unknown>) {
+  return {
+    key: "growth:cnwork",
+    status: "running",
+    total: 1,
+    completed: 0,
+    current: [],
+    results: [],
+    started_at: 1,
+    finished_at: null,
+    account: "cnwork",
+    kind: "all",
+    ...overrides,
+  };
+}
+
 const growthView = {
   supported: true,
   auto_growth: true,
@@ -142,7 +158,8 @@ it("hides the growth drawer for non-CN accounts", async () => {
   openDetail("intl-work.info");
   await act(async () => {});
   expect(screen.queryByText("成长计划")).toBeNull();
-  expect(get).not.toHaveBeenCalled();
+  // Only the page-wide job poll runs; the task list is never fetched for this account.
+  expect(get.mock.calls.map(([url]) => url)).toEqual(["/growth-jobs"]);
 });
 
 it("patches the per-task switch by merging the current mapping", async () => {
@@ -167,24 +184,31 @@ it("runs one task manually and surfaces the claim result", async () => {
   fixture();
   vi.spyOn(api, "get").mockResolvedValue({ data: growthView } as never);
   const post = vi.spyOn(api, "post").mockResolvedValue({
-    data: {
-      id: "cnwork",
-      task_code: "chat_5",
-      ok: true,
-      claimed: true,
-      message: "已补报 2 条对话活跃事件；已自动领奖 +100c +0e",
-    },
+    data: job({
+      status: "completed",
+      kind: "single",
+      completed: 1,
+      total: 1,
+      finished_at: 2,
+      results: [
+        {
+          task_code: "chat_5",
+          title: "对话活跃补报",
+          ok: true,
+          claimed: true,
+          message: "已补报 2 条对话活跃事件；已自动领奖 +100c +0e",
+        },
+      ],
+    }),
   } as never);
   render(<Credentials />);
   openDetail("cn-work.info");
   const button = await screen.findByRole("button", { name: "一键完成对话活跃补报 cn-work.info" });
   await act(async () => fireEvent.click(button));
   await waitFor(() => expect(post).toHaveBeenCalled());
-  expect(post).toHaveBeenCalledWith(
-    "/credentials/cnwork/growth-tasks/auto",
-    { task_code: "chat_5" },
-    expect.objectContaining({ timeout: 300000 }),
-  );
+  expect(post).toHaveBeenCalledWith("/credentials/cnwork/growth-tasks/auto", {
+    task_code: "chat_5",
+  });
   expect(await screen.findByText(/已自动领奖 \+100c \+0e/)).toBeTruthy();
 });
 
@@ -250,12 +274,39 @@ it("selects every automatable task and hides chainless tasks", async () => {
 it("explains an empty run-all instead of reporting zero tasks", async () => {
   fixture();
   vi.spyOn(api, "get").mockResolvedValue({ data: growthView } as never);
-  vi.spyOn(api, "post").mockResolvedValue({ data: { results: [], enabled: [] } } as never);
+  vi.spyOn(api, "post").mockResolvedValue({
+    data: job({ status: "completed", kind: "all", total: 0, finished_at: 2 }),
+  } as never);
   render(<Credentials />);
   openDetail("cn-work.info");
   const runAll = await screen.findByRole("button", { name: "全部执行 cn-work.info" });
   await act(async () => fireEvent.click(runAll));
   expect(await screen.findByText("没有可执行的任务（均已领取或未解锁）")).toBeTruthy();
+});
+
+it("shows the running task in a banner that survives closing the drawer", async () => {
+  fixture();
+  const running = job({
+    total: 3,
+    completed: 1,
+    current: [{ item: { task_code: "chat_5", title: "对话活跃补报" }, step: null }],
+  });
+  vi.spyOn(api, "get").mockImplementation(
+    async (url: string) =>
+      ({ data: url === "/growth-jobs" ? { jobs: [running] } : growthView }) as never,
+  );
+  render(<Credentials />);
+  // The page banner shows without opening the drawer.
+  expect(await screen.findByText("成长计划 · cn-work.info")).toBeTruthy();
+  expect(screen.getByText("正在执行 对话活跃补报")).toBeTruthy();
+  openDetail("cn-work.info");
+  expect(await screen.findByRole("button", { name: "全部执行 cn-work.info" })).toHaveProperty(
+    "textContent",
+    "执行中 1/3",
+  );
+  expect(
+    screen.getByRole("button", { name: "一键完成对话活跃补报 cn-work.info" }).textContent,
+  ).toBe("执行中…");
 });
 
 it("marks claimed tasks on the button and locks their switch", async () => {

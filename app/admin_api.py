@@ -477,19 +477,20 @@ def install_admin(app, config, gateway):
         task_code = data.get("task_code")
         if not isinstance(task_code, str) or not task_code:
             raise ValueError("task_code 必须为非空字符串")
-        result = await run_in_threadpool(gateway.admin_growth_auto, identity, task_code)
-        event("credential.growth_auto", {"credential": identity, "task_code": task_code,
-                                         "ok": result.get("ok") is True,
-                                         "claimed": result.get("claimed") is True})
-        return JSONResponse({"id": identity, "task_code": task_code, **result})
+        job = await run_in_threadpool(gateway.admin_growth_auto, identity, task_code)
+        event("credential.growth_auto", {"credential": identity, "task_code": task_code})
+        return JSONResponse(job)
 
     @route("POST", "/admin/credentials/{id}/growth-tasks/auto-all")
     async def growth_task_auto_all(request):
         identity = request.path_params["id"]
-        result = await run_in_threadpool(gateway.admin_growth_auto_all, identity)
-        event("credential.growth_auto_all", {"credential": identity,
-                                             "count": len(result.get("results") or [])})
-        return JSONResponse({"id": identity, **result})
+        job = await run_in_threadpool(gateway.admin_growth_auto_all, identity)
+        event("credential.growth_auto_all", {"credential": identity, "count": job.get("total", 0)})
+        return JSONResponse(job)
+
+    @route("GET", "/admin/growth-jobs")
+    async def growth_jobs(request):
+        return JSONResponse({"jobs": gateway.admin_growth_jobs()})
 
     @route("POST", "/admin/credentials/growth-batch")
     async def growth_batch(request):

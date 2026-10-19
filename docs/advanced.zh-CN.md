@@ -141,7 +141,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 自动签到与 Buddy 旅行是按账号设置的开关（WebUI 凭证页）：国内个人账号默认开启，国际默认关闭，保存即生效，无需重启。成长中心仅面向个人账号，企业账号不参与旅行（也不再显示上游 403）。
 
-成长中心补领（`auto_growth`，国内个人账号默认开启）随每小时维护扫描执行，只做接取与领取：领取已完成任务的积分与能量，自身不启动任何行为链。任务级 `growth_auto` 开关（默认全部关闭）把指定任务纳入自动化，扫描随后驱动对应行为链——可能消耗积分的真实对话、应用体验或专家召唤。凭证页展示实时任务列表，支持单任务与已开开关任务的一键手动执行，任务开关可复制到已选账号（`POST /admin/credentials/growth-batch`）；面板由 `GET /admin/credentials/{id}/growth-tasks`、`.../growth-tasks/auto` 与 `.../auto-all` 支撑。手动执行与扫描领取均入审计；企业与国际账号不显示该面板。
+成长中心补领（`auto_growth`，国内个人账号默认开启）随每小时维护扫描执行，只做接取与领取：领取已完成任务的积分与能量，自身不启动任何行为链。任务级 `growth_auto` 开关（默认全部关闭）把指定任务纳入自动化，扫描随后驱动对应行为链——可能消耗积分的真实对话、应用体验或专家召唤。凭证页展示实时任务列表，支持单任务与已开开关任务的一键手动执行，任务开关可复制到已选账号（`POST /admin/credentials/growth-batch`）；面板由 `GET /admin/credentials/{id}/growth-tasks`、`.../growth-tasks/auto` 与 `.../auto-all` 支撑。手动执行是服务端后台任务（每个账号同时只有一个）：请求立即返回任务，关闭抽屉或页面不影响执行，运行中再次发起会返回当前任务；`GET /admin/growth-jobs` 列出各账号当前或最近一次任务及正在执行的任务，供页面横幅显示。手动执行与扫描领取均入审计；企业与国际账号不显示该面板。
 
 `CODEBUDDY2API_AUTO_ACCEPT_BUDDY` 仅启动读取，默认 `false`；预授权已启用国内账号完成首次领猫任务、协议及旅行，自动旅行仍受账号开关控制。`first_buddy` 无需单独接取，包含 `not_accepted` 在内的待完成状态可直接发起一次本账号的真实国内 WorkBuddy 对话；优先可用零倍率模型，否则取最低已知倍率，最多请求 32 个输出 token，可能消耗少量积分。不执行其他奖励任务、不付费开盒、不切猫、不领取国际试用积分。
 
@@ -176,7 +176,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 | `POST /admin/credentials` | 从服务端受控目录导入 `.info` |
 | `DELETE /admin/credentials/{name}` | 按文件名删除凭证文件；仍被模型绑定引用时返回 409 |
 | `PATCH /admin/credentials/{id}` | 按账号设置单个布尔字段（`enabled`、`auto_checkin`、`auto_travel`、`auto_daily_chat` 或 `auto_growth`）或 `growth_auto` 任务码映射；保存自动任务开关不立即领取 |
-| `GET /admin/credentials/{id}/growth-tasks` · `POST .../growth-tasks/auto` · `.../auto-all` · `POST /admin/credentials/growth-batch` | 实时成长任务列表；执行单任务或全部已开任务；为已选账号批量设置任务开关 |
+| `GET /admin/credentials/{id}/growth-tasks` · `POST .../growth-tasks/auto` · `.../auto-all` · `GET /admin/growth-jobs` · `POST /admin/credentials/growth-batch` | 实时成长任务列表；以后台任务执行单任务或全部已开任务；各账号当前与最近任务；为已选账号批量设置任务开关 |
 | `POST /admin/oauth/start` · `GET /admin/oauth/poll` | 发起与轮询登录；`site=cn`（默认）、`intl`（国际 WorkBuddy）或 `intl-codebuddy`（国际 CodeBuddy） |
 | `GET /admin/credits` · `POST /admin/checkin` | 查询额度；按日幂等签到，国内按开关继续旅行 |
 | `POST /admin/sync` | 同步全部启用账号的余额、目录和用量，不签到、不领取试用 |

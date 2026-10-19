@@ -2377,6 +2377,34 @@ $white: var(--page);
   background: var(--good-bg);
   border-color: color-mix(in srgb, var(--good) 45%, transparent);
 }
+/* 后台任务进度横幅：关闭抽屉或刷新页面后仍由轮询恢复。 */
+.jobBanner {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+  padding: 11px 15px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+}
+.jobBannerHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.jobBanner progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+}
+.jobBanner small {
+  color: var(--muted);
+  font-size: 11px;
+}
 .rateProfile {
   font-size: 10px;
   color: $muted;

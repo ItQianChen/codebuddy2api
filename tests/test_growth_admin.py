@@ -6,6 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct execution.
 
 import tempfile
+import threading
+import time
 import unittest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -15,7 +17,7 @@ from unittest.mock import Mock, patch
 from app.admin_api import install_admin
 from app import growth_tasks
 from app.control_store import ControlStore
-from app.gateway_management import Management
+from app.gateway_management import GROWTH_JOBS, Management
 
 
 class GrowthAdminTests(unittest.TestCase):
@@ -115,48 +117,76 @@ class GrowthAdminTests(unittest.TestCase):
 
 
 class GrowthManualRunTests(unittest.TestCase):
+    """Manual runs are background jobs: the request returns at once, the banner follows the job."""
+
+    TASKS = [{"task_code": "chat_5", "title": "对话活跃", "claimed": False, "locked": False},
+             {"task_code": "skill_1", "title": "技能使用", "claimed": False, "locked": False},
+             {"task_code": "expert_5", "title": "专家召唤", "claimed": False, "locked": True}]
+
     def setUp(self):
         root = Path(tempfile.mkdtemp())
         self.store = ControlStore(root / "control.sqlite3")
         self.addCleanup(self.store.close)
         self.management = Management(SimpleNamespace(CONFIG={"control_store": self.store}))
-        context = patch.object(Management, "_growth_chain_context",
-                               return_value=SimpleNamespace(token="t", uid="u", domain="d"))
-        context.start()
-        self.addCleanup(context.stop)
+        for target, value in (("_growth_chain_context", SimpleNamespace(token="t", uid="u", domain="d")),
+                              ("_growth_task_list", self.TASKS)):
+            patcher = patch.object(Management, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def finished(self, identity):
+        for _ in range(200):
+            view = GROWTH_JOBS.view(f"growth:{identity}")
+            if view["status"] == "completed":
+                return view
+            time.sleep(0.01)
+        self.fail("growth job did not finish")
 
     def test_auto_all_runs_enabled_switches_even_with_master_off(self):
-        self.store.set_growth_auto("acct", {"chat_5": True, "skill_1": True, "expert_5": False})
-        self.store.set_auto_growth("acct", False)
+        self.store.set_growth_auto("acct-a", {"chat_5": True, "skill_1": True, "expert_5": False})
+        self.store.set_auto_growth("acct-a", False)
         with patch("app.growth_chains.run", return_value={"ok": True, "message": "done"}) as run:
-            result = self.management.admin_growth_auto_all("acct")
+            started = self.management.admin_growth_auto_all("acct-a")
+            job = self.finished("acct-a")
+        self.assertEqual(started["total"], 2)
         self.assertEqual([call.args[0] for call in run.call_args_list], ["chat_5", "skill_1"])
-        self.assertEqual(result["enabled"], ["chat_5", "skill_1"])
+        self.assertEqual([row["title"] for row in job["results"]], ["对话活跃", "技能使用"])
 
     def test_auto_all_falls_back_to_every_open_task_when_no_switch_is_on(self):
-        self.store.set_growth_auto("acct", {"chat_5": False})
-        tasks = [{"task_code": "skill_1", "claimed": False, "locked": False},
-                 {"task_code": "chat_5", "claimed": True, "locked": False},
-                 {"task_code": "expert_5", "claimed": False, "locked": True},
-                 {"task_code": "wb_wechat_oa_subscribe_task", "claimed": False, "locked": False}]
-        with patch("app.growth_tasks.merged_tasks", return_value=tasks), \
-                patch("app.growth_chains.run", return_value={"ok": True, "message": "done"}) as run:
-            result = self.management.admin_growth_auto_all("acct")
-        self.assertEqual([call.args[0] for call in run.call_args_list], ["skill_1"])
-        self.assertEqual(result["enabled"], ["skill_1"])
+        self.store.set_growth_auto("acct-b", {"chat_5": False})
+        with patch("app.growth_chains.run", return_value={"ok": True, "message": "done"}) as run:
+            self.management.admin_growth_auto_all("acct-b")
+            self.finished("acct-b")
+        self.assertEqual([call.args[0] for call in run.call_args_list], ["chat_5", "skill_1"])
 
     def test_upstream_failure_is_reported_per_task(self):
-        self.store.set_growth_auto("acct", {"chat_5": True, "skill_1": True})
+        self.store.set_growth_auto("acct-c", {"chat_5": True, "skill_1": True})
         outcomes = [growth_tasks.Failure("http", 502), {"ok": True, "message": "done"}]
         with patch("app.growth_chains.run", side_effect=outcomes):
-            result = self.management.admin_growth_auto_all("acct")
-        self.assertEqual([item["ok"] for item in result["results"]], [False, True])
-        self.assertIn("执行失败", result["results"][0]["message"])
+            self.management.admin_growth_auto_all("acct-c")
+            job = self.finished("acct-c")
+        self.assertEqual([item["ok"] for item in job["results"]], [False, True])
+        self.assertIn("执行失败", job["results"][0]["message"])
+
+    def test_a_running_job_is_returned_instead_of_starting_another(self):
+        gate = threading.Event()
+
+        def slow(code, ctx):
+            gate.wait(2)
+            return {"ok": True, "message": code}
+        with patch("app.growth_chains.run", side_effect=slow):
+            first = self.management.admin_growth_auto("acct-d", "chat_5")
+            second = self.management.admin_growth_auto("acct-d", "skill_1")
+            running = GROWTH_JOBS.view("growth:acct-d")
+            gate.set()
+            job = self.finished("acct-d")
+        self.assertEqual((first["status"], second["started_at"]), ("running", first["started_at"]))
+        self.assertEqual(running["current"], [{"item": {"task_code": "chat_5", "title": "对话活跃"}, "step": None}])
+        self.assertEqual([row["task_code"] for row in job["results"]], ["chat_5"])
 
     def test_single_run_rejects_codes_without_chain(self):
         with self.assertRaises(HTTPException):
             self.management.admin_growth_auto("acct", "wb_wechat_oa_subscribe_task")
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
