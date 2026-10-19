@@ -7,6 +7,7 @@ import {
   list,
   modelResponse,
   object,
+  text,
   useResource,
   type CatalogScan,
   type Credential,
@@ -38,6 +39,20 @@ import {
   rateOf,
   specRange,
 } from "../modelMetadata";
+import {
+  OutputProbeNote,
+  RateOverrideFields,
+  describeProbe,
+  formatEstimate,
+  measuredNote,
+  rateDetails,
+  rateSource,
+  useOutputProbes,
+  useRateProbeJob,
+  type RateProbeControl,
+  type RateSource,
+} from "../modelRates";
+import { JobBanner } from "../jobs";
 import s from "../ui.module.scss";
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
 const validId = (id: string) => /^[A-Za-z0-9_.:/@-]{1,160}$/.test(id) && ![".", ".."].includes(id);
@@ -103,31 +118,83 @@ function RoutePreview({ preview }: { preview: Preview }) {
 
 function RateCell({ model }: { model: ModelRule }) {
   const rate = rateOf(model.credits);
-  if (rate === null)
-    return (
-      <>
-        <DataValue value={model.credits} />
-        <small className={s.specNote}>产品倍率未知</small>
-      </>
-    );
+  const details = rateDetails(model);
   const perProfile =
     model.credits_by_profile &&
     typeof model.credits_by_profile === "object" &&
     !Array.isArray(model.credits_by_profile)
       ? Object.entries(model.credits_by_profile)
       : [];
-  const rows = perProfile.filter(([, price]) => perProfile.length > 1 || rateOf(price) !== rate);
+  // The headline rate comes from the cheapest product; its provenance decides the label.
+  const headline = perProfile.find(([, price]) => rateOf(price) === rate)?.[0];
+  const source = headline ? rateSource(details[headline]) : "declared";
+  const unpriced = Object.entries(details).find(
+    ([, detail]) => rateSource(detail) === "measured" && detail.measured?.rate == null,
+  );
+  if (rate === null) {
+    if (unpriced)
+      return (
+        <div className={s.rateStack} title={measuredNote(unpriced[1])}>
+          <span className={`${s.rateChip} ${s.rateMeasured}`}>实测计费 · 倍率待估</span>
+        </div>
+      );
+    return (
+      <>
+        <DataValue value={model.credits} />
+        <small className={s.specNote}>产品倍率未知</small>
+      </>
+    );
+  }
+  const rows = perProfile.filter(
+    ([profile, price]) =>
+      perProfile.length > 1 || rateOf(price) !== rate || rateSource(details[profile]) !== source,
+  );
+  const label = (value: number, kind: RateSource) =>
+    kind === "measured"
+      ? `≈${formatEstimate(value)} · 实测计费`
+      : kind === "manual"
+        ? `${formatEstimate(value)} · 手填`
+        : value === 0
+          ? "限时免费 0x"
+          : formatRate(value);
   return (
     <div className={s.rateStack}>
-      <span className={rate === 0 ? `${s.rateChip} ${s.rateFree}` : s.rateChip}>
-        {rate === 0 ? "限时免费 0x" : formatRate(rate)}
+      <span
+        className={
+          source === "measured"
+            ? `${s.rateChip} ${s.rateMeasured}`
+            : rate === 0
+              ? `${s.rateChip} ${s.rateFree}`
+              : s.rateChip
+        }
+        title={
+          source === "measured" && headline
+            ? measuredNote(details[headline])
+            : source === "manual"
+              ? "管理员手填倍率，路由与 /v1/models 以此为准"
+              : undefined
+        }
+      >
+        {label(rate, source)}
       </span>
-      {rows.map(([profile, price]) => (
-        <small className={s.rateProfile} key={profile}>
-          {profileLabel(profile)}{" "}
-          {rateOf(price) === null ? "未知" : formatRate(rateOf(price) as number)}
+      {rows.map(([profile, price]) => {
+        const value = rateOf(price);
+        const kind = rateSource(details[profile]);
+        return (
+          <small
+            className={s.rateProfile}
+            key={profile}
+            title={kind === "measured" ? measuredNote(details[profile]) : undefined}
+          >
+            {profileLabel(profile)} {value === null ? "未知" : label(value, kind)}
+          </small>
+        );
+      })}
+      {unpriced && headline !== unpriced[0] && (
+        <small className={s.rateProfile} title={measuredNote(unpriced[1])}>
+          {profileLabel(unpriced[0])} 实测计费 · 倍率待估
         </small>
-      ))}
+      )}
     </div>
   );
 }
@@ -138,6 +205,7 @@ export function ModelEditor({
   revision,
   onClose,
   onSaved,
+  rateProbe,
   creating = false,
 }: {
   model: ModelRule;
@@ -146,6 +214,7 @@ export function ModelEditor({
   revision: number;
   onClose: () => void;
   onSaved: () => void;
+  rateProbe?: RateProbeControl;
   creating?: boolean;
 }) {
   const [rule, setRule] = useState({
@@ -201,6 +270,7 @@ export function ModelEditor({
       region: rule.region || null,
       profile: rule.profile || null,
       credential_ids: rule.credential_ids,
+      credits_override: rule.credits_override ?? {},
     };
     const path = creating ? "/models" : `/models/${encodeURIComponent(model.id)}`;
     const config = { signal: controller.signal };
@@ -419,6 +489,15 @@ export function ModelEditor({
                 ))}
             </fieldset>
           )}
+          {!creating && !model.custom && (
+            <RateOverrideFields
+              model={model}
+              value={rule.credits_override ?? {}}
+              onChange={(next) => update("credits_override", next)}
+              probe={rateProbe}
+              disabled={busy}
+            />
+          )}
         </fieldset>
         <ErrorNotice message={error} />
         <div className={s.actions}>
@@ -509,6 +588,8 @@ export function Models() {
   const [guardNotice, setGuardNotice] = useState<string | null>(null);
   const [scan, setScan] = useState<CatalogScan | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
+  const outputProbes = useOutputProbes();
+  const rateJob = useRateProbeJob(resource.reload);
   const loadScan = useCallback(() => {
     void api
       .get("/models/scan")
@@ -596,6 +677,16 @@ export function Models() {
               刷新目录
             </button>
             <button
+              disabled={rateJob.job?.status === "running"}
+              onClick={() => rateJob.start()}
+              title="后台任务：对目录声明 0x 的模型逐产品发起一次 ≈8K token 对话；有扣费即为实测计费，未扣费才是真 0 倍率"
+            >
+              <Icon name="refresh" />
+              {rateJob.job?.status === "running"
+                ? `检测中 ${rateJob.job.completed}/${rateJob.job.total}`
+                : "一键检测倍率"}
+            </button>
+            <button
               disabled={scanBusy || scan?.status === "running"}
               onClick={startScan}
               title="逐个账号刷新目录，仅由你手动触发；单账号失败时保留其旧目录"
@@ -621,6 +712,27 @@ export function Models() {
       />
       <ResourceState {...resource} />
       <ErrorNotice message={error} />
+      <ErrorNotice message={rateJob.error} />
+      {rateJob.job?.status === "running" ? (
+        <JobBanner
+          title={
+            rateJob.job.meta.scope === "all"
+              ? "一键检测倍率"
+              : `倍率探测 · ${text(rateJob.job.meta.scope)}`
+          }
+          job={rateJob.job}
+          describe={describeProbe}
+        />
+      ) : (
+        rateJob.job && (
+          <p className={s.note} role="status">
+            倍率检测
+            {rateJob.job.total ? "已完成" : "已完成：没有目录声明 0x 的模型"}
+            ：实测计费 {text(rateJob.job.meta.billed)} · 确认免费 {text(rateJob.job.meta.free)} ·
+            失败 {text(rateJob.job.meta.failed)}
+          </p>
+        )
+      )}
       <ErrorNotice message={credentials.error} retry={credentials.reload} />
       {guardNotice && (
         <p className={s.successNotice} role="status">
@@ -804,6 +916,9 @@ export function Models() {
                       </td>
                       <td className={s.specCell}>
                         <SpecValue model={m} kind="output" />
+                        <OutputProbeNote
+                          probe={outputProbes[m.public_id] ?? outputProbes[m.upstream_id ?? m.id]}
+                        />
                       </td>
                       <td>
                         <EffortChips model={m} />
@@ -879,6 +994,7 @@ export function Models() {
               setEditorRevision(null);
             }}
             onSaved={resource.reload}
+            rateProbe={rateJob}
           />
         )}
       </DrawerPresence>

@@ -141,7 +141,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 
 自动签到与 Buddy 旅行是按账号设置的开关（WebUI 凭证页）：国内个人账号默认开启，国际默认关闭，保存即生效，无需重启。成长中心仅面向个人账号，企业账号不参与旅行（也不再显示上游 403）。
 
-成长中心补领（`auto_growth`，国内个人账号默认开启）随每小时维护扫描执行，只做接取与领取：领取已完成任务的积分与能量，自身不启动任何行为链。任务级 `growth_auto` 开关（默认全部关闭）把指定任务纳入自动化，扫描随后驱动对应行为链——可能消耗积分的真实对话、应用体验或专家召唤。凭证页展示实时任务列表，支持单任务与已开开关任务的一键手动执行，任务开关可复制到已选账号（`POST /admin/credentials/growth-batch`）；面板由 `GET /admin/credentials/{id}/growth-tasks`、`.../growth-tasks/auto` 与 `.../auto-all` 支撑。手动执行与扫描领取均入审计；企业与国际账号不显示该面板。
+成长中心补领（`auto_growth`，国内个人账号默认开启）随每小时维护扫描执行，只做接取与领取：领取已完成任务的积分与能量，自身不启动任何行为链。任务级 `growth_auto` 开关（默认全部关闭）把指定任务纳入自动化，扫描随后驱动对应行为链——可能消耗积分的真实对话、应用体验或专家召唤。凭证页展示实时任务列表，支持单任务与已开开关任务的一键手动执行，任务开关可复制到已选账号（`POST /admin/credentials/growth-batch`）；面板由 `GET /admin/credentials/{id}/growth-tasks`、`.../growth-tasks/auto` 与 `.../auto-all` 支撑。手动执行是服务端后台任务（每个账号同时只有一个）：请求立即返回任务，关闭抽屉或页面不影响执行，运行中再次发起会返回当前任务；`GET /admin/growth-jobs` 列出各账号当前或最近一次任务及正在执行的任务，供页面横幅显示。手动执行与扫描领取均入审计；企业与国际账号不显示该面板。
 
 `CODEBUDDY2API_AUTO_ACCEPT_BUDDY` 仅启动读取，默认 `false`；预授权已启用国内账号完成首次领猫任务、协议及旅行，自动旅行仍受账号开关控制。`first_buddy` 无需单独接取，包含 `not_accepted` 在内的待完成状态可直接发起一次本账号的真实国内 WorkBuddy 对话；优先可用零倍率模型，否则取最低已知倍率，最多请求 32 个输出 token，可能消耗少量积分。不执行其他奖励任务、不付费开盒、不切猫、不领取国际试用积分。
 
@@ -176,7 +176,7 @@ scoped 模式可选传入 `X-Codebuddy-Session-ID`、`metadata.conversation_id` 
 | `POST /admin/credentials` | 从服务端受控目录导入 `.info` |
 | `DELETE /admin/credentials/{name}` | 按文件名删除凭证文件；仍被模型绑定引用时返回 409 |
 | `PATCH /admin/credentials/{id}` | 按账号设置单个布尔字段（`enabled`、`auto_checkin`、`auto_travel`、`auto_daily_chat` 或 `auto_growth`）或 `growth_auto` 任务码映射；保存自动任务开关不立即领取 |
-| `GET /admin/credentials/{id}/growth-tasks` · `POST .../growth-tasks/auto` · `.../auto-all` · `POST /admin/credentials/growth-batch` | 实时成长任务列表；执行单任务或全部已开任务；为已选账号批量设置任务开关 |
+| `GET /admin/credentials/{id}/growth-tasks` · `POST .../growth-tasks/auto` · `.../auto-all` · `GET /admin/growth-jobs` · `POST /admin/credentials/growth-batch` | 实时成长任务列表；以后台任务执行单任务或全部已开任务；各账号当前与最近任务；为已选账号批量设置任务开关 |
 | `POST /admin/oauth/start` · `GET /admin/oauth/poll` | 发起与轮询登录；`site=cn`（默认）、`intl`（国际 WorkBuddy）或 `intl-codebuddy`（国际 CodeBuddy） |
 | `GET /admin/credits` · `POST /admin/checkin` | 查询额度；按日幂等签到，国内按开关继续旅行 |
 | `POST /admin/sync` | 同步全部启用账号的余额、目录和用量，不签到、不领取试用 |
@@ -256,6 +256,27 @@ WebUI 可以直接上传文件；以下限制针对 `POST /admin/credentials` �
 `model_capability_guard` 默认 `true`，可在 WebUI、`--model-capability-guard false` 或 `CODEBUDDY2API_MODEL_CAPABILITY_GUARD=false` 关闭。仅在现有绑定和当前免费优先范围内筛选，明确不兼容返回 400、不发上游；未知能力兼容放行，每条请求固定入口开关。检查图片、工具及历史、已声明思考选项，以及 `max_tokens` 输出上限（含 Responses 映射的 `max_output_tokens`）；不估算输入 token，不对 `max_completion_tokens` 改名或套用该上限，不转换 Anthropic 思考预算。关闭不绕过鉴权、目录授权、容量或大小限制。
 
 两种国际产品在选路后归并含图的连续 `user` 段，保留内容顺序和图片数据；国内请求、纯文本段及 system/assistant/tool 边界不变。消息级属性冲突或内容无法无损表达时返回 `400 / image_user_run_not_mergeable`，最终字节限制仍生效。图片兼容不随能力开关关闭，不增加重试，也不让文本模型获得原生视觉。
+
+### 实测计费与输出上限
+
+目录倍率只是上游声明；上游开始收费后，模型仍可能继续声明 `x0.00`。每次响应的 `usage` 都带有实际扣费 credit，审计日志按请求保存，因此网关以实测为准，而不是只信声明：
+
+- 某产品声明免费的模型，若该产品近 7 天最近 20 次请求中有任意一次被扣费，即视为**实测计费**，并在各处不再按免费处理：零余额账号不再可用、免费优先排序不再优先、`auto` 不再视其为免费。连续 20 次未扣费后恢复为免费。
+- 流量只能证明模型被计费，不能给出倍率：上游按会话缓存提示词，命中部分约按新输入的 1/20 计费，且常不在 `usage` 中体现，因此按单次扣费折算会把每 token 价格低估一个数量级。实测计费的模型在被探测校准前显示 **实测计费 · 倍率待估** 与平均每次扣费，同样不会被当作免费。
+- 探测时对目标模型与本产品一个已声明付费倍率的参考模型（最接近 0.1x 者）各发一次约 8K token、各自新会话的相同请求；目标倍率 = 参考倍率 × 两者每 token 扣费之比，无需假设任何 token 单价。目标未扣费时不发参考请求。
+- `GET /v1/models` 的 `credits` / `credits_by_profile` 为生效倍率；最低倍率来自估算时额外返回 `credits_estimated: true`。
+- 可按模型 × 产品手填倍率（模型规则的 `credits_override`，范围 `0`–`1000`，`0` 表示确认免费），路由与 `/v1/models` 均以手填值优先于声明与实测。自建别名不单独设倍率，请设在其上游模型的规则上。
+- `POST /admin/models/{id}/rate-probe` 在提供该模型的每个产品上，用有余额的账号发起一次约 8K token 的请求，并记录上游返回的扣费与校准倍率；`POST /admin/models/rate-probe` 对所有被某产品声明免费的模型执行同样探测。两者都启动同一个共享后台任务（并发 4）并立即返回，运行中再次发起会返回当前任务；`GET /admin/models/rate-probe` 返回进度、正在探测的模型/产品/步骤以及全部结果。真正免费的模型探测不消耗积分；被计费的模型消耗其自身请求（约 1x 的模型约 0.6 积分）加参考模型的数个计费单位。每个探测请求（含参考模型）也会写入请求日志，带 token 与扣费：协议为 `rate_probe`，会话 ID 以 `rate-probe-` 为前缀。校准样本在控制库中保留 30 天，不会从日志重复计入。
+
+目录声明的 `maxOutputTokens` 常高于模型实际能输出的量，且更大的 `max_tokens` 不会报错，而是被静默钳制。`scripts/probe_max_tokens.py` 经网关实测真实上限：要求模型数到足以写满当前档位，并区分上游截断（`finish=length` 且输出低于请求值）与模型主动收尾。档位不超过声明值，按 4 个模型并行，每个模型限时 600 秒，结果追加写入 JSONL，`--resume` 可断点续测。
+
+```bash
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --panel-out auth/output_probes.json
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --models glm-5.2 --resume --panel-out auth/output_probes.json
+python3 scripts/probe_max_tokens.py --key "$CODEBUDDY2API_KEY" --dry-run
+```
+
+`--panel-out` 将结果合并写入 `control.sqlite3` 同目录的 `output_probes.json`，未重测的模型保留原记录。`GET /admin/models/output-probes` 只读返回该文件，重跑后下次请求即生效，无需重启。探测会真实消耗积分。
 
 ## 思考兼容
 

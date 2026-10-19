@@ -1103,6 +1103,28 @@ $white: var(--page);
   margin: 0;
   flex-shrink: 0;
 }
+/* 成长任务：标题 | 居中的进度/奖励 | 按钮，三列各自留白。 */
+.growthTaskRow {
+  display: grid;
+  /* 固定列宽：各行彼此独立成网格，固定宽度才能让进度与按钮上下对齐。 */
+  grid-template-columns: minmax(0, 1fr) 9.5rem 5.5rem;
+  align-items: center;
+  column-gap: 14px;
+  font-size: 11.5px;
+}
+.growthTaskRow .check {
+  margin: 0;
+}
+.growthTaskRow .badge {
+  justify-self: center;
+  font-variant-numeric: tabular-nums;
+}
+.growthAction {
+  display: flex;
+}
+.growthAction button {
+  width: 100%;
+}
 .enableSwitch {
   display: inline-flex;
   align-items: center;
@@ -2354,6 +2376,62 @@ $white: var(--page);
   color: var(--good);
   background: var(--good-bg);
   border-color: color-mix(in srgb, var(--good) 45%, transparent);
+}
+/* 后台任务进度横幅：关闭抽屉或刷新页面后仍由轮询恢复。 */
+.jobBanner {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+  padding: 11px 15px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+}
+.jobBannerHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.jobBanner progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent);
+}
+.jobBanner small {
+  color: var(--muted);
+  font-size: 11px;
+}
+/* 目录声明 0x 却被实测扣费：用警示色，避免与真正的限时免费混淆。 */
+.rateMeasured {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+/* 最大输出列下方的实测标注：钳制 / 与声称一致 / 下界或未测出。 */
+.probeNote {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.probeNote small {
+  font-size: 10px;
+  color: $muted;
+}
+.probeClamped {
+  color: var(--error);
+}
+.probeOk {
+  color: var(--good);
+}
+.probeMuted {
+  color: $muted;
+  font-weight: 500;
 }
 .rateProfile {
   font-size: 10px;

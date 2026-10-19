@@ -1,5 +1,5 @@
 import { metric, type RecordValue } from "./api";
-import { t as translate } from "./i18n";
+import { t as translate, type MessageKey } from "./i18n";
 import s from "./ui.module.scss";
 
 const labels: Record<string, string> = {
@@ -242,16 +242,16 @@ const times = new Set([
   "cooldown_until",
   "until",
 ]);
-const ownLabel = (map: Record<string, string>, key: string) =>
+const ownLabel = <V extends string>(map: Record<string, V>, key: string): V | undefined =>
   Object.hasOwn(map, key) ? map[key] : undefined;
 export function profileLabel(value: string) {
   return ownLabel(profiles, value) ?? value;
 }
-const eventKinds: Record<string, string> = {
+const eventKinds: Record<string, MessageKey> = {
   runtime: "logs.kind.runtime",
   admin: "logs.kind.admin",
 };
-const eventActions: Record<string, string> = {
+const eventActions: Record<string, MessageKey> = {
   credits: "logs.action.credits",
   cred: "logs.action.cred",
   models: "logs.action.models",
@@ -294,6 +294,17 @@ const eventActions: Record<string, string> = {
   "credentials.uploaded": "logs.action.credentials_uploaded",
   "credentials.exported": "logs.action.credentials_exported",
   storage_archive: "logs.action.storage_archive",
+  "buddy.departure_failed": "logs.action.buddy_departure_failed",
+  "buddy.failed": "logs.action.buddy_failed",
+  "buddy.reconciled": "logs.action.buddy_reconciled",
+  "buddy.task_failed": "logs.action.buddy_task_failed",
+  "config.notice_dismissed": "logs.action.config_notice_dismissed",
+  "credentials.refresh_imported": "logs.action.credentials_refresh_imported",
+  housekeeper: "logs.action.housekeeper",
+  "model.rate_probe": "logs.action.model_rate_probe",
+  "models.rate_probe": "logs.action.models_rate_probe",
+  "models.scan": "logs.action.models_scan",
+  trial: "logs.action.trial",
 };
 export function eventActionLabel(action: unknown) {
   return typeof action === "string" ? ownLabel(eventActions, action) : undefined;
@@ -307,7 +318,7 @@ export function bytes(value: number) {
   if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MiB`;
   return `${(value / 1073741824).toFixed(2)} GiB`;
 }
-const valueKeys: Record<string, string> = {
+const valueKeys: Record<string, MessageKey> = {
   success: "val.success",
   error: "val.error",
   cancelled: "val.cancelled",
@@ -335,6 +346,7 @@ const valueKeys: Record<string, string> = {
   collect: "val.stage.collect",
   refresh: "val.stage.refresh",
   info: "val.level.info",
+  rate_probe: "val.protocol.rate_probe",
 };
 
 export function DataValue({

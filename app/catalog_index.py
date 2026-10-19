@@ -23,8 +23,10 @@ class CatalogIndex:
 
     SCOPES = ("models", "serves")
 
-    def __init__(self, accounts, *, revision=0, policy_revision=0, is_enabled=None):
+    def __init__(self, accounts, *, revision=0, policy_revision=0, is_enabled=None, scope_fn=None):
         self.accounts = accounts if isinstance(accounts, dict) else {}
+        # The gateway passes a scope reader that applies its effective model rates.
+        self._scope = scope_fn or account_scope
         self.revision = revision
         self.policy_revision = policy_revision
         self._enabled = is_enabled or (lambda _identity: True)
@@ -47,13 +49,13 @@ class CatalogIndex:
 
     def _shared_sources(self, scope):
         """Collect every enabled international account catalog once per scope."""
-        return [(account["profile"], account_scope(account, scope))
+        return [(account["profile"], self._scope(account, scope))
                 for identity, account in self.accounts.items()
                 if isinstance(account, dict) and account.get("profile") in INTERNATIONAL
                 and account.get("models") is not None and self._enabled(identity)]
 
     def _effective(self, account, scope, sources):
-        native = account_scope(account, scope)
+        native = self._scope(account, scope)
         if native is None:
             return None
         profile = account.get("profile")

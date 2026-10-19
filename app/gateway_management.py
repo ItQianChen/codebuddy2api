@@ -8,7 +8,13 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
-from . import checkin, daily_chat, growth_chains, growth_tasks, model_policy, travel, trial_management
+from .background_jobs import JobBoard
+from . import (checkin, daily_chat, growth_chains, growth_events, growth_tasks, model_policy, model_rates,
+               output_probes, travel, trial_management)
+
+
+# One job per account: a second start while one runs returns the running job.
+GROWTH_JOBS = JobBoard()
 
 
 class Management:
@@ -181,6 +187,9 @@ class Management:
         tasks = growth_tasks.merged_tasks(token, uid=headers.get("X-User-Id", ""),
                                           domain=headers.get("X-Domain", ""))
         state = self.CONFIG.get("control_store").snapshot()["credentials"].get(identity, {}) or {}
+        for task in tasks:
+            # Only codes with a chain can be switched or run; others are left to the claim sweep.
+            task["automatable"] = task["task_code"] in growth_chains.RUNNERS
         return {"supported": True, "auto_growth": model_policy.credential_auto_growth(self.CONFIG, entry),
                 "growth_auto": dict(state.get("growth_auto") or {}), "tasks": tasks}
 
@@ -212,26 +221,58 @@ class Management:
             nickname=(summary.get("email") or "").split("@")[0],
             headers=headers, lock_key=identity)
 
+    @staticmethod
+    def _run_growth_chain(code, ctx):
+        """Upstream failures become a readable outcome instead of an opaque 400."""
+        try:
+            return growth_chains.run(code, ctx)
+        except (growth_tasks.Failure, growth_events.Failure) as error:
+            return {"ok": False, "message": f"执行失败：{error}"}
+
+    def _start_growth_job(self, identity, ctx, codes, tasks, kind):
+        """Run task chains one by one in the background; the banner shows the current task."""
+        titles = {task["task_code"]: task.get("title") or task["task_code"] for task in tasks or ()}
+
+        def run(code, _progress):
+            return {"task_code": code, "title": titles.get(code, code), **self._run_growth_chain(code, ctx)}
+        return GROWTH_JOBS.start(f"growth:{identity}", codes, run, meta={"account": identity, "kind": kind},
+                                 label=lambda code: {"task_code": code, "title": titles.get(code, code)})
+
+    @staticmethod
+    def _growth_task_list(ctx):
+        try:
+            return growth_tasks.merged_tasks(ctx.token, ctx.uid, ctx.domain)
+        except growth_tasks.Failure:
+            return None
+
     def admin_growth_auto(self, identity, task_code):
-        """Run one task chain manually, regardless of its automation switch."""
-        if task_code not in growth_tasks.KNOWN_TASK_CODES:
-            raise HTTPException(400, "未知的成长任务")
+        """Start one task chain manually, regardless of its automation switch."""
+        if task_code not in growth_chains.RUNNERS:
+            raise HTTPException(400, "该任务暂无自动链")
         ctx = self._growth_chain_context(identity)
-        result = growth_chains.run(task_code, ctx)
-        if result.get("skipped") and "没有此任务" in result.get("message", ""):
-            raise HTTPException(404, result["message"])
-        return result
+        return self._start_growth_job(identity, ctx, [task_code], self._growth_task_list(ctx), "single")
 
     def admin_growth_auto_all(self, identity):
-        """Run every task whose automation switch is on, plus the idempotent claim sweep."""
+        """Start every task whose switch is on, or every open task when none is switched on.
+
+        A manual run ignores the scheduled master switch.
+        """
         ctx = self._growth_chain_context(identity)
-        enabled = model_policy.growth_auto_tasks(self.CONFIG, {"account_key": identity})
-        results = []
-        for code in sorted(enabled & set(growth_chains.RUNNERS)):
-            outcome = growth_chains.run(code, ctx)
-            results.append({"task_code": code, **outcome})
-        return {"results": results,
-                "enabled": sorted(enabled)}
+        state = self.CONFIG["control_store"].snapshot()["credentials"].get(identity, {}) or {}
+        enabled = sorted(code for code, on in (state.get("growth_auto") or {}).items()
+                         if on is True and code in growth_chains.RUNNERS)
+        tasks = self._growth_task_list(ctx)
+        if not enabled:
+            if tasks is None:
+                raise HTTPException(502, "成长任务列表获取失败")
+            enabled = [task["task_code"] for task in tasks if task["task_code"] in growth_chains.RUNNERS
+                       and not task["claimed"] and not task["locked"]]
+        return self._start_growth_job(identity, ctx, enabled, tasks, "all")
+
+    @staticmethod
+    def admin_growth_jobs():
+        """Every account's current or last growth job, for the progress banner."""
+        return GROWTH_JOBS.views("growth:")
 
     @staticmethod
     def _daily_chat_view(store, identity, now):
@@ -272,11 +313,16 @@ class Management:
         pool = self.CONFIG.get("cred_pool")
         if pool:
             pool._rescan()
-        facts = {}
+        model_rates.refresh(self.gateway, max_age=model_rates.REFRESH_MAX_AGE_S)
+        facts, served, declared = {}, {}, {}
         for account in (self.CONFIG.get("account_catalogs") or {}).values():
             for item in self.gateway._usable_models(
                     self.gateway._effective_account_scope(account, "serves") or []):
                 source = item["id"]
+                served.setdefault(source, set()).add(account["profile"])
+                if "credits_source" in item:
+                    declared.setdefault(source, {})[account["profile"]] = \
+                        self.gateway._multiplier_value(item.get("credits_declared"))
                 row = facts.setdefault(source, {"id": source, "credits": None, "credits_by_profile": {}})
                 price = self.gateway._multiplier_value(item.get("credits"))
                 if price is not None:
@@ -294,10 +340,29 @@ class Management:
             metadata = self.gateway.model_capabilities.route_metadata(
                 self.gateway, rule["upstream_id"], rule=rule, include_disabled=True)
             prices = self.gateway.model_capabilities.declaration_prices(self.gateway, metadata)
-            result.append({**target, **metadata, **prices, **rule, "id": source,
+            upstream = rule["upstream_id"]
+            rates = model_rates.details(self.gateway, upstream, sorted(served.get(upstream, ())))
+            for profile, value in (declared.get(upstream) or {}).items():
+                rates[profile]["declared"] = value
+            result.append({**target, **metadata, **prices, **rule, "id": source, "rate_details": rates,
                            "available_credentials": len(preview["candidates"]),
                            "available": bool(preview["candidates"])})
         return sorted(result, key=lambda row: row["id"])
+
+    def admin_rate_probe_model(self, source):
+        """Probe one rule's upstream model on every product that serves it, in the background."""
+        upstream = model_policy.rule_for(self.CONFIG, source)["upstream_id"]
+        return model_rates.start_probe(self.gateway, upstream, scope=source)
+
+    def admin_rate_probe_all(self):
+        return model_rates.start_probe(self.gateway)
+
+    def admin_rate_probe_view(self):
+        return model_rates.job_view(self.gateway)
+
+    def admin_output_probes(self):
+        control = self.CONFIG.get("control_store")
+        return output_probes.read(output_probes.default_path(control.path if control is not None else None))
 
     def admin_model_preview(self, source, rule):
         upstream = rule.get("upstream_id", source)

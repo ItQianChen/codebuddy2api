@@ -40,6 +40,8 @@ Add independent mappings with public/upstream IDs and local enablement. Choose e
 
 - **Model details** shows descriptions, capability states, token limits, reasoning options and safe raw metadata by product; differences remain separate. Declarations are read-only and do not guarantee native or measured support. Route previews use the draft binding scope.
 - International catalogs are shared and deduplicated. Inherited entries show "Shared catalog source" with expandable safe originals; native declarations and shared references remain distinguishable.
+- The rate column shows `≈0.037x · 实测计费` for a model declared free that upstream charges, with the sample counts on hover, and `· 手填` for a manual rate. **Edit rule → 消费倍率** takes a manual rate per product and **一键探测倍率** sends one ≈8K-token request per product to tell real 0x from measured billing; **一键检测倍率** in the header does this for every model declared free. See [Measured rates and output limits](advanced.md#measured-rates-and-output-limits).
+- The max output column overlays results from `scripts/probe_max_tokens.py`: red `32K ⚠ 钳制 12×` for silent clamping, green `48K ✓` / `64K ↑` when the claim holds or is exceeded, grey `≥40K` for a lower bound and `?` when nothing was measured.
 
 ## Logs
 

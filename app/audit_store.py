@@ -675,6 +675,27 @@ class AuditStore:
             return out
         return self._read_run(fetch, {})
 
+    def credit_samples(self, since):
+        """Per-request upstream charges with their token counts, oldest first.
+
+        Only requests whose upstream usage reported a credit figure are returned; the
+        model is the upstream one, since billing follows what was actually sent.
+        """
+        def fetch(db):
+            rows = db.execute(
+                "SELECT started_at, profile, COALESCE(json_extract(payload,'$.upstream_model'), model) AS model, "
+                "json_extract(payload,'$.credit') AS credit, "
+                "COALESCE(json_extract(payload,'$.input_tokens'),0) AS input_tokens, "
+                "COALESCE(json_extract(payload,'$.cache_read_tokens'),0) AS cache_read_tokens, "
+                "COALESCE(json_extract(payload,'$.output_tokens'),0) AS output_tokens "
+                "FROM requests WHERE started_at>=? AND json_extract(payload,'$.credit') IS NOT NULL "
+                "AND profile IS NOT NULL "
+                # Probes are logged too, but their calibrated samples come from the probe table.
+                "AND COALESCE(json_extract(payload,'$.protocol'),'')!='rate_probe' "
+                "ORDER BY started_at", (since,)).fetchall()
+            return [dict(row) for row in rows if row["model"]]
+        return self._read_run(fetch, [])
+
     def storage(self):
         # Opening the storage/dashboard page keeps incremental cleanup moving
         # with the same bounded write slice; heavy scans stay read-only.

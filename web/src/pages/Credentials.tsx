@@ -4,7 +4,8 @@ import { OAuth } from "../OAuth";
 import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
 import { Buddy, buddyConfirmation } from "../Buddy";
-import { GrowthTasks } from "../GrowthTasks";
+import { GrowthTasks, describeGrowth, useGrowthJobs } from "../GrowthTasks";
+import { JobBanner } from "../jobs";
 import { BalanceExpiry, CreditsPanel } from "../CreditsPanel";
 import { dateLabel, tokenExpiry } from "../credits";
 import {
@@ -584,6 +585,20 @@ export function Credentials() {
   const safePage = Math.min(page, totalPages);
   const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
   const liveSelected = selected.filter((id) => allItems.some((c) => c.id === id));
+  const growthJobs = useGrowthJobs();
+  const accountName = (identity: string) => {
+    const credential = allItems.find((c) => c.id === identity);
+    return credential?.name ?? credential?.nickname ?? identity.slice(0, 8);
+  };
+  const growthBanner = (job: ReturnType<typeof growthJobs.byAccount>) =>
+    job?.status === "running" ? (
+      <JobBanner
+        key={job.key}
+        title={`成长计划 · ${text(accountName(text(job.meta.account)))}`}
+        job={job}
+        describe={describeGrowth}
+      />
+    ) : null;
   const channelDefs: [ChannelKey, string, string][] = [
     ["all", "全部账号", "个人区域与企业账号汇总"],
     ["cn", "国内区域", "国内 CodeBuddy · WorkBuddy"],
@@ -911,6 +926,8 @@ export function Credentials() {
               busy={busy}
               onPreference={preference}
               selectedIds={liveSelected}
+              job={growthJobs.byAccount(c.id)}
+              onRun={(code) => growthJobs.start(c.id, code)}
             />
           </>
         )}
@@ -952,6 +969,7 @@ export function Credentials() {
         </p>
       )}
       {!detail && busy && <p role="status">操作执行中，请勿重复提交…</p>}
+      {growthJobs.jobs.map(growthBanner)}
       <ResourceState {...resource} />
       {!detail && <ErrorNotice message={error} />}
       {resource.data && (
@@ -1311,6 +1329,7 @@ export function Credentials() {
               </p>
             )}
             {busy && <p role="status">操作执行中，请勿重复提交…</p>}
+            {growthBanner(growthJobs.byAccount(liveDetail.id))}
             <ErrorNotice message={error} />
             {maintenance.length > 0 && <MaintenanceResults results={maintenance} />}
             <div className={s.detailBar}>

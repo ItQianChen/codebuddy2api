@@ -227,10 +227,19 @@ export type ModelRule = {
   credential_ids: string[];
   credits?: unknown;
   credits_by_profile?: unknown;
+  credits_override?: Record<string, number>;
+  rate_details?: unknown;
   capabilities?: unknown;
   limits?: unknown;
   metadata_by_profile?: unknown;
 };
+function rateOverride(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as RecordValue).filter(
+    (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+  );
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
 export function modelResponse(value: unknown): {
   revision: number;
   models: ModelRule[];
@@ -264,6 +273,7 @@ export function modelResponse(value: unknown): {
       region: typeof m.region === "string" ? m.region : "",
       profile: typeof m.profile === "string" ? m.profile : "",
       credential_ids: m.credential_ids as string[],
+      credits_override: rateOverride(m.credits_override),
     };
   });
   return {

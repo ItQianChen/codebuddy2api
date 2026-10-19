@@ -355,6 +355,28 @@ def install_admin(app, config, gateway):
     async def models_scan_state(request):
         return JSONResponse(gateway.catalog_scan_view())
 
+    @route("POST", "/admin/models/rate-probe")
+    async def models_rate_probe_start(request):
+        """Probe every nominally free model once per product; spends a little credit if charged."""
+        result = await run_in_threadpool(gateway.admin_rate_probe_all)
+        event("models.rate_probe", {"count": result.get("total", 0)})
+        return JSONResponse(result)
+
+    @route("GET", "/admin/models/rate-probe")
+    async def models_rate_probe_state(request):
+        return JSONResponse(gateway.admin_rate_probe_view())
+
+    @route("GET", "/admin/models/output-probes")
+    async def models_output_probes(request):
+        return JSONResponse(await run_in_threadpool(gateway.admin_output_probes))
+
+    @route("POST", "/admin/models/{id:path}/rate-probe")
+    async def models_rate_probe_one(request):
+        source = request.path_params["id"]
+        result = await run_in_threadpool(gateway.admin_rate_probe_model, source)
+        event("model.rate_probe", {"model": source, "count": result.get("total", 0)})
+        return JSONResponse(result)
+
     def checked_rule(source, data, *, creating=False):
         if "custom" in data:
             raise ValueError("custom 是只读字段")
@@ -477,19 +499,20 @@ def install_admin(app, config, gateway):
         task_code = data.get("task_code")
         if not isinstance(task_code, str) or not task_code:
             raise ValueError("task_code 必须为非空字符串")
-        result = await run_in_threadpool(gateway.admin_growth_auto, identity, task_code)
-        event("credential.growth_auto", {"credential": identity, "task_code": task_code,
-                                         "ok": result.get("ok") is True,
-                                         "claimed": result.get("claimed") is True})
-        return JSONResponse({"id": identity, "task_code": task_code, **result})
+        job = await run_in_threadpool(gateway.admin_growth_auto, identity, task_code)
+        event("credential.growth_auto", {"credential": identity, "task_code": task_code})
+        return JSONResponse(job)
 
     @route("POST", "/admin/credentials/{id}/growth-tasks/auto-all")
     async def growth_task_auto_all(request):
         identity = request.path_params["id"]
-        result = await run_in_threadpool(gateway.admin_growth_auto_all, identity)
-        event("credential.growth_auto_all", {"credential": identity,
-                                             "count": len(result.get("results") or [])})
-        return JSONResponse({"id": identity, **result})
+        job = await run_in_threadpool(gateway.admin_growth_auto_all, identity)
+        event("credential.growth_auto_all", {"credential": identity, "count": job.get("total", 0)})
+        return JSONResponse(job)
+
+    @route("GET", "/admin/growth-jobs")
+    async def growth_jobs(request):
+        return JSONResponse({"jobs": gateway.admin_growth_jobs()})
 
     @route("POST", "/admin/credentials/growth-batch")
     async def growth_batch(request):

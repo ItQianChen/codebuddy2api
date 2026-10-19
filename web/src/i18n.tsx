@@ -2,9 +2,9 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 
 export type Lang = "zh" | "en";
 
-// Variable keys; both languages ship fully loaded. A missing entry falls back
-// to zh and finally to the key itself so partial coverage stays readable.
-const zh: Record<string, string> = {
+// Variable keys; both languages ship fully loaded. zh defines the key set and
+// en is typed against it, so a key missing from either side fails type-checking.
+const zh = {
   "storage.title": "存储管理",
   "storage.desc": "日志库体积、归档、清理与压缩指引。",
   "storage.status": "存储状态",
@@ -156,6 +156,18 @@ const zh: Record<string, string> = {
   "logs.action.credentials_uploaded": "凭证已上传",
   "logs.action.credentials_exported": "凭证已导出",
   "logs.action.storage_archive": "日志归档",
+  "val.protocol.rate_probe": "倍率探测",
+  "logs.action.buddy_departure_failed": "首领出发失败",
+  "logs.action.buddy_failed": "首领领取失败",
+  "logs.action.buddy_reconciled": "首领状态已核对",
+  "logs.action.buddy_task_failed": "首领任务失败",
+  "logs.action.config_notice_dismissed": "配置提示已关闭",
+  "logs.action.credentials_refresh_imported": "凭证已刷新导入",
+  "logs.action.housekeeper": "后台维护",
+  "logs.action.model_rate_probe": "模型倍率探测",
+  "logs.action.models_rate_probe": "一键检测倍率",
+  "logs.action.models_scan": "扫描全部账号模型",
+  "logs.action.trial": "体验积分",
   "dash.refresh": "刷新",
   "dash.configNoticeTitle": "配置来源分散",
   "dash.configNoticeBody":
@@ -294,9 +306,10 @@ const zh: Record<string, string> = {
   "logs.col.modelProfile": "模型 / 产品",
   "logs.logTypes": "日志类型",
   "logs.pageIncomplete": "日志分页响应不完整",
-};
+} satisfies Record<string, string>;
+export type MessageKey = keyof typeof zh;
 
-const en: Record<string, string> = {
+const en: Record<MessageKey, string> = {
   "storage.title": "Storage",
   "storage.desc": "Log database size, archiving, cleanup and compaction guide.",
   "storage.status": "Storage status",
@@ -451,6 +464,18 @@ const en: Record<string, string> = {
   "logs.action.credentials_uploaded": "Credentials uploaded",
   "logs.action.credentials_exported": "Credentials exported",
   "logs.action.storage_archive": "Log archive",
+  "val.protocol.rate_probe": "Rate probe",
+  "logs.action.buddy_departure_failed": "Buddy departure failed",
+  "logs.action.buddy_failed": "Buddy claim failed",
+  "logs.action.buddy_reconciled": "Buddy state reconciled",
+  "logs.action.buddy_task_failed": "Buddy task failed",
+  "logs.action.config_notice_dismissed": "Config notice dismissed",
+  "logs.action.credentials_refresh_imported": "Credentials refresh-imported",
+  "logs.action.housekeeper": "Housekeeping",
+  "logs.action.model_rate_probe": "Model rate probe",
+  "logs.action.models_rate_probe": "Rate check (all models)",
+  "logs.action.models_scan": "Full catalog scan",
+  "logs.action.trial": "Trial credits",
   "dash.refresh": "Refresh",
   "dash.configNoticeTitle": "Scattered configuration sources",
   "dash.configNoticeBody":
@@ -595,6 +620,8 @@ const en: Record<string, string> = {
 };
 
 const messages: Record<Lang, Record<string, string>> = { zh, en };
+/** Every key with its translation per language; tests check the maps that point into it. */
+export const messageKeys = Object.keys(zh) as MessageKey[];
 const STORAGE_KEY = "codebuddy2api.lang";
 const LANG_EVENT = "codebuddy.lang";
 
