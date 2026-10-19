@@ -64,6 +64,7 @@ def _public_credential(item):
               "auto_checkin", "auto_travel", "travel_supported", "checkin", "travel",
               "trial_supported", "trial",
               "daily_chat_supported", "auto_daily_chat", "daily_chat",
+              "growth_supported", "auto_growth", "growth_auto",
               "token_expired", "token_expires_at", "last_refresh_time", "sessions", "sticky_sessions", "last_error_code", "usage_stats"}
     result = {key: value for key, value in item.items() if key in fields}
     identity = item.get("account_key") or item.get("id")
@@ -434,8 +435,13 @@ def install_admin(app, config, gateway):
     @route("PATCH", "/admin/credentials/{id}")
     async def credentials_patch(request):
         data = await _body(request)
-        if set(data) not in ({"enabled"}, {"auto_checkin"}, {"auto_travel"}, {"auto_daily_chat"}) or any(type(value) is not bool for value in data.values()):
-            raise ValueError("仅接受一个布尔字段：enabled、auto_checkin、auto_travel 或 auto_daily_chat")
+        if set(data) not in ({"enabled"}, {"auto_checkin"}, {"auto_travel"}, {"auto_daily_chat"},
+                             {"auto_growth"}, {"growth_auto"}) \
+                or any(type(value) is not bool for key, value in data.items() if key != "growth_auto") \
+                or ("growth_auto" in data and (not isinstance(data["growth_auto"], dict)
+                                               or any(type(value) is not bool for value in data["growth_auto"].values()))):
+            raise ValueError("仅接受一个布尔字段：enabled、auto_checkin、auto_travel、auto_daily_chat 或 auto_growth，"
+                             "或 growth_auto 任务开关映射")
         field, value = next(iter(data.items()))
         identity = request.path_params["id"]
         def apply():
@@ -449,10 +455,65 @@ def install_admin(app, config, gateway):
                     gateway.admin_set_auto_checkin(identity, value)
                 elif field == "auto_daily_chat":
                     gateway.admin_set_auto_daily_chat(identity, value)
+                elif field == "auto_growth":
+                    gateway.admin_set_auto_growth(identity, value)
+                elif field == "growth_auto":
+                    gateway.admin_set_growth_auto(identity, value)
                 else:
                     gateway.admin_set_auto_travel(identity, value)
             event("credential." + field, {"credential": identity, field: value})
             return JSONResponse({"id": identity, field: value, "revision": control.snapshot()["revision"]})
+        return await run_in_threadpool(apply)
+
+    @route("GET", "/admin/credentials/{id}/growth-tasks")
+    async def growth_tasks_get(request):
+        identity = request.path_params["id"]
+        return JSONResponse(await run_in_threadpool(gateway.admin_growth_tasks, identity))
+
+    @route("POST", "/admin/credentials/{id}/growth-tasks/auto")
+    async def growth_task_auto(request):
+        identity = request.path_params["id"]
+        data = await _body(request)
+        task_code = data.get("task_code")
+        if not isinstance(task_code, str) or not task_code:
+            raise ValueError("task_code 必须为非空字符串")
+        result = await run_in_threadpool(gateway.admin_growth_auto, identity, task_code)
+        event("credential.growth_auto", {"credential": identity, "task_code": task_code,
+                                         "ok": result.get("ok") is True,
+                                         "claimed": result.get("claimed") is True})
+        return JSONResponse({"id": identity, "task_code": task_code, **result})
+
+    @route("POST", "/admin/credentials/{id}/growth-tasks/auto-all")
+    async def growth_task_auto_all(request):
+        identity = request.path_params["id"]
+        result = await run_in_threadpool(gateway.admin_growth_auto_all, identity)
+        event("credential.growth_auto_all", {"credential": identity,
+                                             "count": len(result.get("results") or [])})
+        return JSONResponse({"id": identity, **result})
+
+    @route("POST", "/admin/credentials/growth-batch")
+    async def growth_batch(request):
+        data = await _body(request)
+        ids, codes = data.get("ids"), data.get("task_codes")
+        enabled = data.get("enabled")
+        if (not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids)
+                or not isinstance(codes, list) or not all(isinstance(code, str) for code in codes)
+                or type(enabled) is not bool):
+            raise ValueError("ids 与 task_codes 必须为字符串数组，enabled 必须为布尔值")
+        def apply():
+            for identity in ids:
+                if selected(identity) is None:
+                    return error_response(404, f"凭证不存在：{identity[:64]}")
+            with mutation_lock:
+                for identity in ids:
+                    if codes:
+                        current = (control.snapshot()["credentials"].get(identity, {}) or {}).get("growth_auto") or {}
+                        merged = {**current, **{code: enabled for code in codes}}
+                        gateway.admin_set_growth_auto(identity, merged)
+                    else:
+                        gateway.admin_set_auto_growth(identity, enabled)
+            event("credential.growth_batch", {"count": len(ids), "task_codes": codes, "enabled": enabled})
+            return JSONResponse({"updated": len(ids), "revision": control.snapshot()["revision"]})
         return await run_in_threadpool(apply)
 
     def upload(body):

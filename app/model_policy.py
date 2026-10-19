@@ -3,7 +3,7 @@ from contextvars import ContextVar
 
 from fastapi import HTTPException
 
-from app import perf_metrics, travel
+from app import growth_tasks, perf_metrics, travel
 from app.model_capabilities import route_metadata
 _request_policy = ContextVar("gateway_model_policy", default=None)
 
@@ -92,6 +92,20 @@ def credential_auto_daily_chat(config, entry, policy=None):
     """A turn spends credits on the account, so international accounts opt in explicitly."""
     supported = entry.get("profile") == "intl-work"
     return supported and _policy(config, policy)["credentials"].get(entry.get("account_key"), {}).get("auto_daily_chat", False)
+
+
+def credential_auto_growth(config, entry, policy=None):
+    """Growth-center sweep is pure accept/claim, so it defaults on for eligible accounts."""
+    return growth_tasks.supported(entry.get("profile"), entry.get("enterprise") is True) and \
+        _policy(config, policy)["credentials"].get(entry.get("account_key"), {}).get("auto_growth", True)
+
+
+def growth_auto_tasks(config, entry, policy=None):
+    """Task codes whose automation chains the sweep may drive for this account."""
+    if not credential_auto_growth(config, entry, policy):
+        return frozenset()
+    mapping = _policy(config, policy)["credentials"].get(entry.get("account_key"), {}).get("growth_auto") or {}
+    return frozenset(code for code, enabled in mapping.items() if enabled is True)
 
 
 def default_rule(source):

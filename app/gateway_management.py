@@ -8,7 +8,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.staticfiles import StaticFiles
 
-from . import checkin, daily_chat, model_policy, travel, trial_management
+from . import checkin, daily_chat, growth_chains, growth_tasks, model_policy, travel, trial_management
 
 
 class Management:
@@ -57,6 +57,10 @@ class Management:
                            daily_chat_supported=daily_chat.supported(entry.get("profile")),
                            auto_daily_chat=model_policy.credential_auto_daily_chat(self.CONFIG, entry),
                            daily_chat=self._daily_chat_view(daily_chats, identity, now),
+                           growth_supported=growth_tasks.supported(entry.get("profile"), entry.get("enterprise") is True),
+                           auto_growth=model_policy.credential_auto_growth(self.CONFIG, entry),
+                           growth_auto=dict((daily_chats.snapshot()["credentials"].get(identity, {})
+                                             if daily_chats else {}) or {}).get("growth_auto") or {},
                            fail_until=until, cooldown_until=until,
                            cooldown_remaining=max(0, round(until - now)),
                            last_error_code=("http_401" if entry.get("last_error") == "backend HTTP 401" else
@@ -127,6 +131,107 @@ class Management:
                 raise HTTPException(400, "活跃打卡仅适用于国际 WorkBuddy 账号")
             self.CONFIG["control_store"].set_auto_daily_chat(identity, enabled)
         # Persist only: enabling never launches a turn; the sweep decides when to run it.
+
+    def admin_set_auto_growth(self, identity, enabled):
+        pool = self.CONFIG.get("cred_pool")
+        if pool is None:
+            raise HTTPException(404, "凭证不存在")
+        with pool._lock:
+            entry = next((entry for entry in pool.entries() if entry.get("account_key") == identity), None)
+            if entry is None:
+                raise HTTPException(404, "凭证不存在")
+            if enabled and not growth_tasks.supported(entry.get("profile"), entry.get("enterprise") is True):
+                raise HTTPException(400, "成长计划仅适用于国内个人账号")
+            self.CONFIG["control_store"].set_auto_growth(identity, enabled)
+        # Persist only: the sweep decides when to run; enabling never launches requests.
+
+    def admin_set_growth_auto(self, identity, mapping):
+        pool = self.CONFIG.get("cred_pool")
+        if pool is None:
+            raise HTTPException(404, "凭证不存在")
+        with pool._lock:
+            entry = next((entry for entry in pool.entries() if entry.get("account_key") == identity), None)
+            if entry is None:
+                raise HTTPException(404, "凭证不存在")
+            if any(mapping.get(code) for code in mapping) and \
+                    not growth_tasks.supported(entry.get("profile"), entry.get("enterprise") is True):
+                raise HTTPException(400, "成长计划仅适用于国内个人账号")
+            self.CONFIG["control_store"].set_growth_auto(identity, mapping)
+
+    def admin_growth_tasks(self, identity):
+        """Live dual-platform task list plus this account's automation switches."""
+        pool = self.CONFIG.get("cred_pool")
+        if pool is None:
+            raise HTTPException(404, "凭证不存在")
+        with pool._lock:
+            entry = next((entry for entry in pool.entries() if entry.get("account_key") == identity), None)
+            if entry is None:
+                raise HTTPException(404, "凭证不存在")
+            supported = growth_tasks.supported(entry.get("profile"), entry.get("enterprise") is True)
+            cm, generation = entry["cm"], entry["cm"]._generation
+        if not supported:
+            return {"supported": False, "auto_growth": False, "growth_auto": {}, "tasks": [],
+                    "message": "成长计划仅适用于国内个人账号"}
+        with cm._lock:
+            headers = cm.get_headers()
+        if not pool.apply_if_current(cm, generation, lambda: None):
+            return {"supported": True, "stale": True, "auto_growth": False, "growth_auto": {},
+                    "tasks": [], "message": "凭证已变化，请刷新核验"}
+        token = self.gateway._bearer_token(headers)
+        tasks = growth_tasks.merged_tasks(token, uid=headers.get("X-User-Id", ""),
+                                          domain=headers.get("X-Domain", ""))
+        state = self.CONFIG.get("control_store").snapshot()["credentials"].get(identity, {}) or {}
+        return {"supported": True, "auto_growth": model_policy.credential_auto_growth(self.CONFIG, entry),
+                "growth_auto": dict(state.get("growth_auto") or {}), "tasks": tasks}
+
+    def _growth_chain_context(self, identity):
+        """Build the chain context or raise 404/400; caller releases nothing (run() self-locks)."""
+        from .site_routing import PROFILE_ENDPOINTS, profile_for_headers
+        pool = self.CONFIG.get("cred_pool")
+        if pool is None:
+            raise HTTPException(404, "凭证不存在")
+        with pool._lock:
+            entry = next((entry for entry in pool.entries() if entry.get("account_key") == identity), None)
+            if entry is None:
+                raise HTTPException(404, "凭证不存在")
+            if not growth_tasks.supported(entry.get("profile"), entry.get("enterprise") is True):
+                raise HTTPException(400, "成长计划仅适用于国内个人账号")
+            if not model_policy.credential_enabled(self.CONFIG, entry):
+                raise HTTPException(400, "账号已人工停用")
+            cm, generation = entry["cm"], entry["cm"]._generation
+            summary = cm.summary()
+        with cm._lock:
+            headers = cm.get_headers()
+        if not pool.apply_if_current(cm, generation, lambda: None):
+            raise HTTPException(409, "凭证已变化，请刷新核验后重试")
+        token = self.gateway._bearer_token(headers)
+        profile = profile_for_headers(headers)
+        return growth_chains.Context(
+            base=PROFILE_ENDPOINTS[profile], token=token, uid=headers.get("X-User-Id", ""),
+            domain=headers.get("X-Domain", ""),
+            nickname=(summary.get("email") or "").split("@")[0],
+            headers=headers, lock_key=identity)
+
+    def admin_growth_auto(self, identity, task_code):
+        """Run one task chain manually, regardless of its automation switch."""
+        if task_code not in growth_tasks.KNOWN_TASK_CODES:
+            raise HTTPException(400, "未知的成长任务")
+        ctx = self._growth_chain_context(identity)
+        result = growth_chains.run(task_code, ctx)
+        if result.get("skipped") and "没有此任务" in result.get("message", ""):
+            raise HTTPException(404, result["message"])
+        return result
+
+    def admin_growth_auto_all(self, identity):
+        """Run every task whose automation switch is on, plus the idempotent claim sweep."""
+        ctx = self._growth_chain_context(identity)
+        enabled = model_policy.growth_auto_tasks(self.CONFIG, {"account_key": identity})
+        results = []
+        for code in sorted(enabled & set(growth_chains.RUNNERS)):
+            outcome = growth_chains.run(code, ctx)
+            results.append({"task_code": code, **outcome})
+        return {"results": results,
+                "enabled": sorted(enabled)}
 
     @staticmethod
     def _daily_chat_view(store, identity, now):
