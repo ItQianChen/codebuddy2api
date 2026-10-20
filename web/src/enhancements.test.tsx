@@ -168,6 +168,7 @@ describe("scoped credential buttons", () => {
       data: [{ id: "one", name: "one.info", enabled: true, profile: "cn-cli", health: "ready" }],
       reload: vi.fn(),
       loading: false,
+      refreshing: false,
       error: null,
     });
     const post = vi.spyOn(api, "post").mockResolvedValue({
@@ -208,6 +209,7 @@ describe("scoped credential buttons", () => {
       ],
       reload: vi.fn(),
       loading: false,
+      refreshing: false,
       error: null,
     });
     const post = vi.spyOn(api, "post").mockResolvedValue({

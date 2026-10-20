@@ -436,12 +436,15 @@ class MirrorTests(UpdaterFixture):
                 return httpx.Response(429)
             return httpx.Response(200, content=self.archive)
         self.config["update_mirror"] = "https://custom.example/"
+        self.config["update_mirror_custom"] = "https://slot.example/"
         updater = Updater(self.config, root=self.root, data_dir=self.data, version="1.0.0", deployment="archive",
                           transport=httpx.MockTransport(handler))
         mirrors = ("https://html.example/", "https://down.example/", "https://limited.example/")
         with patch.object(updates, "MIRRORS", mirrors):
             results = {item["mirror"]: item for item in updater.test_mirrors()}
-        self.assertEqual(set(results), {"", *mirrors, "https://custom.example/"})
+            [single] = updater.test_mirrors("https://limited.example/")
+        self.assertEqual(set(results), {"", *mirrors, "https://custom.example/", "https://slot.example/"})
+        self.assertEqual((single["mirror"], single["error"]), ("https://limited.example/", "HTTP 429"))
         self.assertTrue(results[""]["ok"] and results["https://custom.example/"]["ok"])
         self.assertGreater(results[""]["speed"], 0)
         self.assertIsNotNone(results[""]["latency_ms"])
@@ -565,6 +568,27 @@ class AdminRouteTests(UpdaterFixture):
         self.assertEqual(locked.status_code, 422)
         self.assertIn("锁定", locked.json()["error"]["message"])
         self.assertTrue(self.client.get("/admin/update", headers=self.headers).json()["mirror_locked"])
+
+    def test_mirror_route_remembers_the_custom_slot(self):
+        saved = self.client.post("/admin/update/mirror", json={"mirror": "https://slot.example",
+                                                               "custom": "https://slot.example"}, headers=self.headers)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["mirror_custom"], "https://slot.example/")
+        switched = self.client.post("/admin/update/mirror", json={"mirror": ""}, headers=self.headers)
+        self.assertEqual((switched.json()["mirror"], switched.json()["mirror_custom"]), ("", "https://slot.example/"))
+        settings = self.config["control_store"].snapshot()["settings"]
+        self.assertEqual(settings["update_mirror_custom"], "https://slot.example/")
+        invalid = self.client.post("/admin/update/mirror", json={"mirror": "", "custom": "ftp://slot"},
+                                   headers=self.headers)
+        self.assertEqual(invalid.status_code, 422)
+
+    def test_mirror_test_route_probes_one_source_or_all(self):
+        with patch.object(self.config["updater"], "test_mirrors", return_value=[]) as probe:
+            self.assertEqual(self.client.post("/admin/update/mirrors/test", headers=self.headers).status_code, 200)
+            self.client.post("/admin/update/mirrors/test", json={"mirror": "https://ghfast.top"}, headers=self.headers)
+            invalid = self.client.post("/admin/update/mirrors/test", json={"mirror": "http://x"}, headers=self.headers)
+        self.assertEqual([call.args for call in probe.call_args_list], [(None,), ("https://ghfast.top/",)])
+        self.assertEqual(invalid.status_code, 422)
 
 
 class PageRouteTests(unittest.TestCase):

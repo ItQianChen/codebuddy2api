@@ -22,6 +22,7 @@ import {
   Empty,
   ErrorNotice,
   Icon,
+  RefreshIcon,
   PageTitle,
   Panel,
   ResourceState,
@@ -54,6 +55,7 @@ import {
 } from "../modelRates";
 import { JobBanner } from "../jobs";
 import s from "../ui.module.scss";
+import { SearchInput, Select } from "../fields";
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
 const validId = (id: string) => /^[A-Za-z0-9_.:/@-]{1,160}$/.test(id) && ![".", ".."].includes(id);
 export function validateRule(rule: ModelRule, models: ModelRule[]): string | null {
@@ -407,10 +409,10 @@ export function ModelEditor({
             <div className={s.formGrid}>
               <label className={s.field}>
                 区域
-                <select
+                <Select
                   value={rule.region || (rule.profile.startsWith("intl-") ? "intl" : "cn")}
-                  onChange={(e) => {
-                    const region = e.target.value;
+                  onChange={(value) => {
+                    const region = value;
                     setRule((old) => ({
                       ...old,
                       region,
@@ -421,11 +423,11 @@ export function ModelEditor({
                 >
                   <option value="cn">中国大陆 · CN</option>
                   <option value="intl">国际 · INTL</option>
-                </select>
+                </Select>
               </label>
               <label className={s.field}>
                 产品
-                <select value={rule.profile} onChange={(e) => update("profile", e.target.value)}>
+                <Select value={rule.profile} onChange={(value) => update("profile", value)}>
                   <option value="">不限产品</option>
                   {profiles
                     .filter((p) => !rule.region || p.startsWith(`${rule.region}-`))
@@ -434,7 +436,7 @@ export function ModelEditor({
                         {profileLabel(p)}
                       </option>
                     ))}
-                </select>
+                </Select>
               </label>
             </div>
           )}
@@ -673,7 +675,7 @@ export function Models() {
                 credentials.reload();
               }}
             >
-              <Icon name="refresh" />
+              <RefreshIcon spinning={resource.refreshing || credentials.refreshing} />
               刷新目录
             </button>
             <button
@@ -681,7 +683,7 @@ export function Models() {
               onClick={() => rateJob.start()}
               title="后台任务：对目录声明 0x 的模型逐产品发起一次 ≈8K token 对话；有扣费即为实测计费，未扣费才是真 0 倍率"
             >
-              <Icon name="refresh" />
+              <RefreshIcon spinning={rateJob.job?.status === "running"} />
               {rateJob.job?.status === "running"
                 ? `检测中 ${rateJob.job.completed}/${rateJob.job.total}`
                 : "一键检测倍率"}
@@ -691,7 +693,7 @@ export function Models() {
               onClick={startScan}
               title="逐个账号刷新目录，仅由你手动触发；单账号失败时保留其旧目录"
             >
-              <Icon name="refresh" />
+              <RefreshIcon spinning={scanBusy || scan?.status === "running"} />
               {scan?.status === "running"
                 ? `扫描中 ${scan.completed}/${scan.total}`
                 : "扫描全部账号模型"}
@@ -764,37 +766,37 @@ export function Models() {
         }
       >
         <div className={s.toolbar}>
-          <input
+          <SearchInput
             aria-label="搜索模型"
             placeholder="搜索 ID、名称、描述、厂商，支持空格分隔多关键词…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={setQuery}
           />
           <div className={s.filterBar}>
-            <select
+            <Select
               aria-label="筛选区域"
               value={filter.region}
-              onChange={(e) => setFilter({ ...filter, region: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, region: value })}
             >
               <option value="">全部区域</option>
               <option value="auto">自动选择</option>
               <option value="cn">中国大陆</option>
               <option value="intl">国际</option>
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="筛选能力"
               value={filter.capability}
-              onChange={(e) => setFilter({ ...filter, capability: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, capability: value })}
             >
               <option value="">全部能力</option>
               <option value="images">支持视觉</option>
               <option value="tools">支持工具</option>
               <option value="reasoning">支持思考</option>
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="筛选思考"
               value={filter.effort}
-              onChange={(e) => setFilter({ ...filter, effort: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, effort: value })}
             >
               <option value="">全部档位</option>
               <option value="off">可关闭思考</option>
@@ -803,27 +805,27 @@ export function Models() {
                   {value}
                 </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="筛选价格"
               value={filter.price}
-              onChange={(e) => setFilter({ ...filter, price: e.target.value })}
+              onChange={(value) => setFilter({ ...filter, price: value })}
             >
               <option value="">全部价格</option>
               <option value="free">限时免费</option>
               <option value="paid">收费</option>
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label="排序方式"
               value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
+              onChange={(value) => setSort(value as SortKey)}
             >
               <option value="catalog">目录顺序</option>
               <option value="rate">倍率 低 → 高</option>
               <option value="context">上下文 大 → 小</option>
               <option value="output">最大输出 大 → 小</option>
               <option value="name">模型 ID A → Z</option>
-            </select>
+            </Select>
             {filtering && (
               <button
                 onClick={() => {

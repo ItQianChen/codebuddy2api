@@ -85,9 +85,9 @@ describe("updates page", () => {
     vi.spyOn(api, "get").mockResolvedValue({ data: payload() });
     mount();
     expect(await screen.findByText("Highlights")).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: "https://github.com/maiphucgiang/codebuddy2api" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "GitHub 仓库" }).getAttribute("href")).toBe(
+      "https://github.com/maiphucgiang/codebuddy2api",
+    );
     expect(screen.getByText("updates")).toBeTruthy();
     expect(screen.getByRole("link", { name: "在 GitHub 查看" }).getAttribute("href")).toBe(
       releases[0]!.url,
@@ -173,35 +173,75 @@ describe("updates page", () => {
     expect(screen.getByText("Older notes")).toBeTruthy();
   });
 
-  it("speed-tests mirrors and switches the download source", async () => {
+  it("tests every source or one in the drawer and switches the download source", async () => {
     vi.spyOn(api, "get").mockResolvedValue({
       data: payload({ mirrors: ["https://ghfast.top/", "https://gh-proxy.com/"], mirror: "" }),
     });
-    const post = vi.spyOn(api, "post").mockImplementation(async (path) =>
-      path === "/update/mirrors/test"
-        ? {
-            data: {
-              results: [
-                { mirror: "https://ghfast.top/", ok: true, latency_ms: 120, speed: 1536 },
-                { mirror: "", ok: true, latency_ms: 900, speed: 80 },
-                { mirror: "https://gh-proxy.com/", ok: false, error: "返回的不是发布包" },
-              ],
-            },
-          }
-        : { data: {} },
-    );
+    const all = [
+      { mirror: "https://ghfast.top/", ok: true, latency_ms: 120, speed: 1536 },
+      { mirror: "", ok: true, latency_ms: 900, speed: 80 },
+      { mirror: "https://gh-proxy.com/", ok: false, error: "返回的不是发布包" },
+    ];
+    // Answers every source even for a single test, like a server from before single tests.
+    const post = vi
+      .spyOn(api, "post")
+      .mockImplementation(async (path) =>
+        path === "/update/mirrors/test" ? { data: { results: all } } : { data: {} },
+      );
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "一键测速" }));
-    const results = await screen.findByRole("list", { name: "测速结果" });
-    const rows = within(results).getAllByRole("listitem");
-    expect(within(rows[0]!).getByText("最快")).toBeTruthy();
-    expect(within(rows[0]!).getByText("120 ms · 1.5 MB/s")).toBeTruthy();
-    expect(within(rows[1]!).getByText("使用中")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /^下载源/ }));
+    const rows = within(await screen.findByRole("list", { name: "下载源列表" })).getAllByRole(
+      "listitem",
+    );
+    expect(rows).toHaveLength(4);
+    expect(within(rows[1]!).getByText("未测速")).toBeTruthy();
+    expect(within(rows[3]!).getByRole("button", { name: "测速 自定义下载源" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    fireEvent.click(within(rows[2]!).getByRole("button", { name: "测速 gh-proxy.com" }));
+    expect(await within(rows[2]!).findByText("返回的不是发布包")).toBeTruthy();
+    expect(post).toHaveBeenCalledWith(
+      "/update/mirrors/test",
+      { mirror: "https://gh-proxy.com/" },
+      { timeout: 60000 },
+    );
+    expect(within(rows[1]!).getByText("未测速")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "全部测速" }));
+    expect(await within(rows[1]!).findByText("120 ms · 1.5 MB/s")).toBeTruthy();
+    expect(within(rows[1]!).getByText("最快")).toBeTruthy();
+    expect(within(rows[0]!).getAllByText("使用中")).toHaveLength(2);
     expect(within(rows[2]!).getByText("返回的不是发布包")).toBeTruthy();
-    expect(within(rows[2]!).getByRole("button", { name: "使用" })).toHaveProperty("disabled", true);
-    fireEvent.click(within(rows[0]!).getByRole("button", { name: "使用" }));
+    expect(within(rows[2]!).getByRole("button", { name: "使用 gh-proxy.com" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    fireEvent.click(within(rows[1]!).getByRole("button", { name: "使用 ghfast.top" }));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/update/mirror", { mirror: "https://ghfast.top/" }),
+    );
+  });
+
+  it("fills, uses and remembers the custom download source", async () => {
+    vi.spyOn(api, "get").mockResolvedValue({
+      data: payload({
+        mirrors: ["https://ghfast.top/"],
+        mirror: "",
+        mirror_custom: "https://saved.example/",
+      }),
+    });
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: {} });
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /^下载源/ }));
+    const slot = await screen.findByRole("textbox", { name: "自定义下载源" });
+    expect(slot).toHaveProperty("value", "https://saved.example/");
+    fireEvent.change(slot, { target: { value: "https://my.example" } });
+    fireEvent.click(screen.getByRole("button", { name: "使用 自定义下载源" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/update/mirror", {
+        mirror: "https://my.example",
+        custom: "https://my.example",
+      }),
     );
   });
 

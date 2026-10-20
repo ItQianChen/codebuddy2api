@@ -795,8 +795,11 @@ def install_admin(app, config, gateway):
     @route("POST", "/admin/update/mirror")
     async def update_mirror(request):
         body = await _body(request, 4096)
+        # "custom" also refills the WebUI's remembered custom slot.
+        requested = {"update_mirror": body.get("mirror"),
+                     **({"update_mirror_custom": body["custom"]} if "custom" in body else {})}
         try:
-            values = validate_settings({"update_mirror": body.get("mirror")})
+            values = validate_settings(requested)
         except ValueError as exc:
             raise UpdateError(str(exc)) from None
 
@@ -813,7 +816,14 @@ def install_admin(app, config, gateway):
 
     @route("POST", "/admin/update/mirrors/test")
     async def update_mirrors_test(request):
-        return JSONResponse({"results": await run_in_threadpool(updater().test_mirrors)})
+        body = await _body(request, 4096, allow_empty=True)
+        only = None
+        if "mirror" in body:
+            try:
+                only = validate_settings({"update_mirror": body["mirror"]})["update_mirror"]
+            except ValueError as exc:
+                raise UpdateError(str(exc)) from None
+        return JSONResponse({"results": await run_in_threadpool(updater().test_mirrors, only)})
 
     @route("POST", "/admin/update/install")
     async def update_install(request):

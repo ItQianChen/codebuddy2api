@@ -5,12 +5,14 @@ import {
   Empty,
   ErrorNotice,
   Fields,
-  Icon,
+  RefreshIcon,
+  SegmentThumb,
   PageTitle,
   Panel,
   ResourceState,
 } from "../components";
 import s from "../ui.module.scss";
+import { Select } from "../fields";
 type Setting = {
   key: string;
   value: unknown;
@@ -140,6 +142,7 @@ function SettingsForm({
       }}
     >
       <div className={s.tabs} role="tablist" aria-label="配置分组">
+        <SegmentThumb />
         {groups.map(([key, label, rows]) => (
           <button
             key={key}
@@ -204,9 +207,9 @@ function SettingsForm({
                   <label className={s.field}>
                     <span className={s.srOnly}>{item.label}</span>
                     {item.choices ? (
-                      <select
+                      <Select
                         value={JSON.stringify(value)}
-                        onChange={(e) => update(item, JSON.parse(e.target.value) as unknown)}
+                        onChange={(value) => update(item, JSON.parse(value) as unknown)}
                       >
                         {!item.choices.some(
                           (choice) => JSON.stringify(choice) === JSON.stringify(value),
@@ -220,7 +223,7 @@ function SettingsForm({
                             {text(choice)}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     ) : boolean ? (
                       <span className={s.check}>
                         <input
@@ -285,7 +288,7 @@ export function Settings() {
         title="系统设置"
         actions={
           <button onClick={resource.reload}>
-            <Icon name="refresh" />
+            <RefreshIcon spinning={resource.refreshing} />
             重新读取
           </button>
         }

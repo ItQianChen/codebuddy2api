@@ -2,7 +2,8 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30000,
-  globalTimeout: 90000,
+  // One worker runs every spec in turn; leave headroom as the suite grows.
+  globalTimeout: 180000,
   workers: 1,
   fullyParallel: false,
   use: {

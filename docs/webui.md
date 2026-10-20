@@ -74,10 +74,10 @@ The page shows downloaded bytes, the current step and overall progress live; aft
 
 - **Git checkouts:** tracked files follow the release and uncommitted edits go into the backup; untracked and ignored files inside replaced directories (such as `web/node_modules` or `docs/plans`) move into the new tree. HEAD does not move, so `git status` then shows the difference from the current commit.
 - **Containers:** program files are written to the container's writable layer. Directories the image layer cannot rename are copied out and removed instead; later updates rename atomically again.
-- **Download source:** pick GitHub directly, a built-in mirror (ghfast.top, gh-proxy.com, ghproxy.net and others) or a custom prefix, and run a speed test (each source downloads the first 512 KiB of the newest archive; a source returning anything but the archive counts as unavailable). Mirrors only serve downloads: releases are still listed from the GitHub API, a mirrored archive must match the API digest, and a release without a digest cannot install through a mirror. `CODEBUDDY2API_UPDATE_MIRROR` sets and locks the source.
+- **Download source:** the overview card shows the source in use and opens a drawer listing GitHub direct, the built-in mirrors (ghfast.top, gh-proxy.com, ghproxy.net and others) and one custom slot. Test every source at once or one at a time (each test downloads the first 512 KiB of the newest archive; a source returning anything but the archive counts as unavailable and cannot be chosen). A prefix typed into the custom slot is remembered once used, even after switching to another source. Mirrors only serve downloads: releases are still listed from the GitHub API, a mirrored archive must match the API digest, and a release without a digest cannot install through a mirror. `CODEBUDDY2API_UPDATE_MIRROR` sets and locks the source.
 - Rolling back to a version without one-click updates means upgrading manually afterwards.
 
-API: `GET /admin/update`, `POST /admin/update/check`, `POST /admin/update/install` (`{"tag": "v<version>"}`), `POST /admin/update/mirror` (`{"mirror": "<prefix or empty>"}`), `POST /admin/update/mirrors/test`.
+API: `GET /admin/update`, `POST /admin/update/check`, `POST /admin/update/install` (`{"tag": "v<version>"}`), `POST /admin/update/mirror` (`{"mirror": "<prefix or empty>", "custom": "<optional custom slot>"}`), `POST /admin/update/mirrors/test` (optional `{"mirror": "<prefix or empty>"}` tests one source).
 
 ## Interface behavior
 

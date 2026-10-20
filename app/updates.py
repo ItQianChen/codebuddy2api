@@ -110,6 +110,10 @@ class Updater:
     def mirror(self):
         return self.config.get("update_mirror") or ""
 
+    @property
+    def custom_mirror(self):
+        return self.config.get("update_mirror_custom") or ""
+
     def _client(self, timeout=30):
         return httpx.Client(transport=self._transport, timeout=timeout, follow_redirects=True,
                             headers={"User-Agent": f"codebuddy2api/{self.current}",
@@ -197,7 +201,7 @@ class Updater:
                     "latest": latest["version"] if latest else None,
                     "update_available": bool(latest and _version(latest["version"]) > _version(self.current)),
                     "releases": [dict(release) for release in self._releases], "job": dict(self._job),
-                    "mirror": self.mirror, "mirrors": list(MIRRORS),
+                    "mirror": self.mirror, "mirrors": list(MIRRORS), "mirror_custom": self.custom_mirror,
                     "mirror_locked": self.config.get("settings_sources", {}).get("update_mirror")
                     in ("cli", "environment", "dotenv")}
 
@@ -472,8 +476,8 @@ class Updater:
 
     # ----------------------------------------------------------------- mirrors
 
-    def test_mirrors(self):
-        """Time every download source on the newest release archive; the bytes are discarded."""
+    def test_mirrors(self, only=None):
+        """Time one source, or every known one, on the newest release archive; the bytes are discarded."""
         if not self._releases:
             self.check()
         with self._lock:
@@ -481,7 +485,9 @@ class Updater:
         if release is None:
             raise UpdateError("没有可用于测速的发布包，请先检查更新")
         url = f"{REPOSITORY_URL}/releases/download/{release['tag']}/codebuddy2api-{release['version']}.tar.gz"
-        candidates = ["", *MIRRORS, *([self.mirror] if self.mirror and self.mirror not in MIRRORS else [])]
+        # Direct, the presets, the remembered custom slot and the source in use, each once.
+        candidates = [only] if only is not None else list(dict.fromkeys(
+            ["", *MIRRORS, *(value for value in (self.custom_mirror, self.mirror) if value)]))
         with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
             results = list(pool.map(lambda mirror: self._probe(mirror, url), candidates))
         return sorted(results, key=lambda item: (not item["ok"], -(item["speed"] or 0)))

@@ -74,10 +74,10 @@
 
 - **Git 工作区**：已跟踪文件按发布内容替换，未提交的修改进入备份；被替换目录中未跟踪与已忽略的文件（如 `web/node_modules`、`docs/plans`）迁回新目录，HEAD 不移动，之后 `git status` 会显示与当前提交的差异。
 - **容器**：程序文件写入容器可写层；镜像层中的目录无法重命名时改为复制后删除，此后的更新又是原子重命名。
-- **下载源**：可选择直连 GitHub、内置镜像（ghfast.top、gh-proxy.com、ghproxy.net 等）或自定义前缀，并一键测速（每个源下载最新发布包的前 512 KiB，返回非发布包内容的源判为不可用）。镜像只用于下载；版本列表仍直连 GitHub API，镜像下载的文件必须与 API 摘要一致，缺少摘要的版本不能经镜像安装。也可用 `CODEBUDDY2API_UPDATE_MIRROR` 设置并锁定。
+- **下载源**：概览中的下载源卡片显示当前使用的源，点击打开抽屉，列出直连 GitHub、内置镜像（ghfast.top、gh-proxy.com、ghproxy.net 等）和一个自定义栏位。可以全部测速，也可以逐个测速（每个源下载最新发布包的前 512 KiB，返回非发布包内容的源判为不可用，不能选用）。自定义栏位填写的前缀使用后会被记住，切换到其他源后仍保留。镜像只用于下载；版本列表仍直连 GitHub API，镜像下载的文件必须与 API 摘要一致，缺少摘要的版本不能经镜像安装。也可用 `CODEBUDDY2API_UPDATE_MIRROR` 设置并锁定。
 - 早于一键更新功能的版本回滚后需手动升级。
 
-接口：`GET /admin/update`、`POST /admin/update/check`、`POST /admin/update/install`（`{"tag": "v<版本>"}`）、`POST /admin/update/mirror`（`{"mirror": "<前缀或空>"}`）、`POST /admin/update/mirrors/test`。
+接口：`GET /admin/update`、`POST /admin/update/check`、`POST /admin/update/install`（`{"tag": "v<版本>"}`）、`POST /admin/update/mirror`（`{"mirror": "<前缀或空>", "custom": "<可选，自定义栏位>"}`）、`POST /admin/update/mirrors/test`（可选 `{"mirror": "<前缀或空>"}`，只测一个源）。
 
 ## 界面行为
 

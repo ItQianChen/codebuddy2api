@@ -3,6 +3,7 @@ import { api, credentialResponse, metric, number, object, text, type RecordValue
 import { Badge } from "./components";
 import { useT } from "./i18n";
 import { eventActionLabel } from "./values";
+import { Select } from "./fields";
 
 export const creditChangeTypes = ["income", "consume", "expire", "adjust"] as const;
 const tones: Record<string, "good" | "neutral" | "warn"> = {
@@ -55,10 +56,10 @@ export function CreditFilters({
   const t = useT();
   return (
     <>
-      <select
+      <Select
         aria-label={t("logs.filter.account")}
         value={credential}
-        onChange={(e) => onChange({ credential: e.target.value })}
+        onChange={(value) => onChange({ credential: value })}
       >
         <option value="">{t("logs.allAccounts")}</option>
         {Object.entries(names).map(([id, name]) => (
@@ -66,11 +67,11 @@ export function CreditFilters({
             {name}
           </option>
         ))}
-      </select>
-      <select
+      </Select>
+      <Select
         aria-label={t("logs.filter.changeType")}
         value={type}
-        onChange={(e) => onChange({ type: e.target.value })}
+        onChange={(value) => onChange({ type: value })}
       >
         <option value="">{t("logs.allChangeTypes")}</option>
         {creditChangeTypes.map((value) => (
@@ -78,7 +79,7 @@ export function CreditFilters({
             {t(eventActionLabel(`credit.${value}`)!)}
           </option>
         ))}
-      </select>
+      </Select>
     </>
   );
 }

@@ -9,7 +9,7 @@ import { Logs } from "./pages/Logs";
 import { Settings } from "./pages/Settings";
 import { Storage } from "./pages/Storage";
 import { Updates } from "./pages/Updates";
-import { Appearance } from "./appearance";
+import { Appearance, LanguageToggle } from "./appearance";
 import s from "./ui.module.scss";
 import { LanguageProvider, chooseLanguage, serverPreference, useT } from "./i18n";
 
@@ -143,6 +143,7 @@ function Shell() {
             )}
           </span>
           <div className={s.actions}>
+            <LanguageToggle />
             <Appearance />
             <span className={s.session}>
               <span />
@@ -182,6 +183,7 @@ function Login() {
   return (
     <div className={s.login}>
       <div className={s.loginAppearance}>
+        <LanguageToggle />
         <Appearance />
       </div>
       <section className={s.loginIntro}>

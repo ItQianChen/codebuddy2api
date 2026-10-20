@@ -67,8 +67,47 @@ export function chooseAppearance(value: Partial<{ mode: Mode; palette: Palette }
   }
   useAppearance.setState({ ...next, persisted });
 }
-export function Appearance() {
+const LANGUAGE_CYCLE: LangPref[] = ["system", "zh", "en"];
+/** Save through the API as well, so the CLI and other browsers share the choice. */
+function persistLanguage(value: LangPref) {
+  void api
+    .get<unknown>("/settings")
+    .then((response) =>
+      api.patch("/settings", {
+        values: { language: value === "system" ? "auto" : value },
+        revision: object(response.data).revision,
+      }),
+    )
+    .catch(() => undefined);
+}
+/** One click moves to the next interface language: system, Chinese, English. */
+export function LanguageToggle() {
   const t = useT();
+  const [pref, setPref] = useState(languagePreference);
+  const name = { system: t("appearance.lang.system"), zh: "中文", en: "English" }[pref];
+  const label = t("appearance.languageIs", { lang: name });
+  return (
+    <button
+      type="button"
+      className={s.appearanceButton}
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        const next = LANGUAGE_CYCLE[(LANGUAGE_CYCLE.indexOf(pref) + 1) % LANGUAGE_CYCLE.length]!;
+        chooseLanguage(next);
+        setPref(next);
+        persistLanguage(next);
+      }}
+    >
+      {pref === "system" ? (
+        <Icon name="globe" />
+      ) : (
+        <span className={s.langGlyph}>{pref === "zh" ? "中" : "EN"}</span>
+      )}
+    </button>
+  );
+}
+export function Appearance() {
   const [open, setOpen] = useState(false);
   const { mode, palette, dark, persisted } = useAppearance();
   useEffect(initializeAppearance, []);
@@ -138,40 +177,6 @@ export function Appearance() {
                 : "配色只应用于浅色界面，不改变状态颜色。"}
             </p>
             {!persisted && <p role="status">浏览器无法保存偏好，本次会话内仍然生效。</p>}
-            <fieldset className={s.langChoices}>
-              <legend>{t("appearance.language")}</legend>
-              {(
-                [
-                  ["system", t("appearance.lang.system")],
-                  ["zh", "中文"],
-                  ["en", "EN"],
-                ] as [LangPref, string][]
-              ).map(([value, label]) => (
-                <label key={value}>
-                  <input
-                    type="radio"
-                    name="ui-language"
-                    value={value}
-                    checked={languagePreference() === value}
-                    onChange={() => {
-                      chooseLanguage(value);
-                      // Persist through the API so the CLI and other browsers share it.
-                      void api
-                        .get<unknown>("/settings")
-                        .then((response) => {
-                          const data = object(response.data);
-                          return api.patch("/settings", {
-                            values: { language: value === "system" ? "auto" : value },
-                            revision: data.revision,
-                          });
-                        })
-                        .catch(() => undefined);
-                    }}
-                  />
-                  <span className={s.langDot}>{label}</span>
-                </label>
-              ))}
-            </fieldset>
           </Drawer>
         )}
       </DrawerPresence>

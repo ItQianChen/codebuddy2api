@@ -55,7 +55,13 @@ function fixture() {
     ],
   });
   const reload = vi.fn();
-  vi.mocked(useResource).mockReturnValue({ data: rows, reload, loading: false, error: null });
+  vi.mocked(useResource).mockReturnValue({
+    data: rows,
+    reload,
+    loading: false,
+    refreshing: false,
+    error: null,
+  });
   return { rows, reload };
 }
 
@@ -247,6 +253,7 @@ it("reflects the master switch from the reloaded credential row", async () => {
     data: [...rows],
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   });
   rerender(<Credentials />);
