@@ -973,7 +973,19 @@ export function Credentials() {
       <ResourceState {...resource} />
       {!detail && <ErrorNotice message={error} />}
       {resource.data && (
-        <div className={s.channelGrid} role="group" aria-label="区域与账号类型筛选">
+        <div className={s.channelTrack} role="group" aria-label="区域与账号类型筛选">
+          <span
+            className={s.channelThumb}
+            aria-hidden="true"
+            style={{
+              transform: `translateX(${
+                Math.max(
+                  0,
+                  channelDefs.findIndex(([key]) => key === channel),
+                ) * 100
+              }%)`,
+            }}
+          />
           {channelDefs.map(([key, label, hint]) => {
             const group = key === "all" ? allItems : allItems.filter((c) => channelOf(c) === key);
             const ready = group.filter(isReady).length;
@@ -999,29 +1011,22 @@ export function Credentials() {
                 key={key}
                 type="button"
                 aria-pressed={active}
-                className={`${s.channelCard} ${active ? s.channelActive : ""}`}
+                className={active ? s.channelActive : ""}
+                title={
+                  hasNumeric
+                    ? `${group.length} 个账号 · 剩余额度 ${metric(totalCredits)}${unlimited ? ` (+${unlimited} 无限)` : ""}`
+                    : `${group.length} 个账号 · ${hint}`
+                }
                 onClick={() => {
                   setChannel(active && key !== "all" ? "all" : key);
                   setPage(1);
                 }}
               >
-                <div className={s.channelHead}>
-                  <span>{label}</span>
-                  <span>
-                    {ready} / {group.length} 就绪
-                  </span>
-                </div>
-                <strong title={hasNumeric ? metric(totalCredits) : undefined}>
-                  {hasNumeric ? compact(totalCredits) : unlimited > 0 ? "无限" : `${group.length}`}
-                </strong>
+                <span>{label}</span>
+                <strong>{hasNumeric ? compact(totalCredits) : unlimited > 0 ? "无限" : "—"}</strong>
                 <small>
-                  {hasNumeric
-                    ? `${group.length} 个账号 · 剩余额度${unlimited ? ` (+${unlimited} 无限)` : ""}`
-                    : `${group.length} 个账号 · ${hint}`}
+                  {ready} / {group.length} 就绪
                 </small>
-                <div className={s.channelBar} aria-hidden="true">
-                  <i style={{ width: `${group.length ? (ready / group.length) * 100 : 0}%` }} />
-                </div>
               </button>
             );
           })}
