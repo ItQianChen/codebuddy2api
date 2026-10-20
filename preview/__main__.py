@@ -57,7 +57,9 @@ def main():
     os.environ["CODEBUDDY_AUTH_DIR"] = str(directory)
     sandbox.install(Upstream())
     os.chdir(directory)  # The gateway reads .env from the working directory.
-    sys.stderr.write(f"[preview] 数据目录：{directory}\n[preview] 密钥：{args.api_key}\n"
+    # Name the default key, but never echo one passed on the command line.
+    key = "preview" if args.api_key == "preview" else "已使用 --api-key 指定的值"
+    sys.stderr.write(f"[preview] 数据目录：{directory}\n[preview] 密钥：{key}\n"
                      f"[preview] 前端热更新：CODEBUDDY_WEBUI_PROXY=http://{args.host}:{args.port} vp dev\n")
     sys.argv = ["converter.py", "serve", "--host", args.host, "--port", str(args.port), "--api-key", args.api_key,
                 *gateway_args]
