@@ -9,6 +9,8 @@
 - 多账号自动选路，兼容国内／国际站，自动刷新凭证。
 - 按账号配置自动任务：国内个人账号默认签到后派 Buddy 旅行，可分别关闭；国际自动签到默认关闭。成长中心仅面向个人账号：已完成任务自动领取积分与能量，行为链按任务开关执行；企业账号不参与。
 
+**在线预览：**[codebuddy2api.elaina-love.com](https://codebuddy2api.elaina-love.com/dashboard)，密钥 `preview`。它让 WebUI 与各个 API 对接模拟上游和合成账号运行，不含任何真实凭证，每 6 小时重置一次；其中已停用凭证导入导出、修改设置和清空日志。在本地运行见[开发预览](docs/development.zh-CN.md)。
+
 ## 快速开始
 
 需要 Git 和 Docker Compose；直接拉取 GHCR 已构建镜像（内含 WebUI），无需在本机编译。
@@ -60,6 +62,7 @@ Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/maiphucgiang/codebu
 ├── app/                 # 管理 API、凭证、目录、审计与策略模块
 ├── web/                 # WebUI 前端（React/TypeScript，构建产物由网关托管）
 ├── tests/               # 离线回归测试
+├── preview/             # 开发预览：真实网关 + 模拟上游 + 合成账号
 ├── docs/                # 用户文档（中英双语）
 ├── examples/            # 客户端配置示例
 ├── scripts/             # 版本与依赖锁定工具
@@ -77,6 +80,7 @@ Compose 默认拉取 `latest`（`CODEBUDDY2API_IMAGE=ghcr.io/maiphucgiang/codebu
 | [部署指南](docs/deployment.zh-CN.md) | 发布镜像、升级、反向代理/HTTPS、本地运行与命令行登录 |
 | [客户端配置](docs/clients.zh-CN.md) | Codex CLI、Claude Code、CC Switch 与通用客户端 |
 | [进阶参考](docs/advanced.zh-CN.md) | 参数、API、模型调度、请求限制与故障排查 |
+| [开发预览](docs/development.zh-CN.md) | 不用真实账号，对接模拟上游运行 WebUI 与各个 API |
 
 ## 常见问题
 

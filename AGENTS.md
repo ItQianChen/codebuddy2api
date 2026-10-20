@@ -12,6 +12,7 @@ The backend is a uv project with `package = false`, so it runs from source witho
 
 ```bash
 uv run --locked --no-build converter.py             # serve on 127.0.0.1:8787 (subcommands: serve | login | config migrate|status)
+uv run --locked --no-build python -B -m preview     # real gateway + simulated upstream + synthetic accounts on :8790, key "preview"
 uv run python -B tests/test_routing_scheduler.py    # one test file (each file is a standalone unittest script)
 uv run python -B tests/test_version.py VersionTests.test_matching_tag   # one test case
 for s in tests/test_*.py; do uv run python -B "$s"; done                # full suite, as CI runs it
@@ -22,6 +23,8 @@ python scripts/export_requirements.py               # regenerate requirements.tx
 
 Tests are offline: they mock the upstream and must never open real upstream connections. Every test file starts with `sys.path.insert(...)` so it can be run directly; keep that in new test files.
 
+The preview (`preview/`, see `docs/development.md`) routes every httpx request into `preview/upstream.py`, a simulation of the upstream endpoints, and refuses all other outbound sockets. When a change makes the gateway call a new upstream endpoint, simulate it there too; an unsimulated endpoint answers 501 and logs `[preview] 未模拟的上游接口`.
+
 The WebUI (`web/`) uses the pinned `vp` (vite-plus) toolchain with pnpm:
 
 ```bash
@@ -29,7 +32,7 @@ vp install --frozen-lockfile
 vp check                 # lint + type-aware type check
 vp test run              # vitest unit tests (src/**/*.test.tsx, jsdom)
 vp build                 # emits web/dist, served by the gateway at /dashboard/
-vp dev                   # dev server on :5174; CODEBUDDY_WEBUI_PROXY=http://127.0.0.1:8787 proxies /admin
+vp dev                   # dev server on :5174; CODEBUDDY_WEBUI_PROXY=http://127.0.0.1:8790 proxies /admin to the preview
 vp exec playwright test                                       # browser e2e (web/e2e/*.spec.ts)
 vp exec playwright test -c playwright.integration.config.ts   # against the real management API (tests/webui_fixture.py; WEBUI_PYTHON picks the interpreter)
 ```
