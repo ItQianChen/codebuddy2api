@@ -52,7 +52,13 @@ function fixture() {
     },
   ];
   const reload = vi.fn();
-  vi.mocked(useResource).mockReturnValue({ data: rows, reload, loading: false, error: null });
+  vi.mocked(useResource).mockReturnValue({
+    data: rows,
+    reload,
+    loading: false,
+    refreshing: false,
+    error: null,
+  });
   return { rows, reload };
 }
 
@@ -223,6 +229,7 @@ it("disables switches when an older backend omits them and rejects malformed typ
     data: [{ id: "old", name: "old.info", enabled: true }],
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   });
   render(<Credentials />);

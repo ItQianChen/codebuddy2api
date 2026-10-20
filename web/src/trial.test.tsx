@@ -37,6 +37,7 @@ it("only opens a confirmation drawer for supported accounts and sends no claim o
   vi.mocked(useResource).mockReturnValue({
     data: [credential, { id: "cn", name: "cn.info", enabled: true, trial_supported: false }],
     loading: false,
+    refreshing: false,
     error: null,
     reload: vi.fn(),
   });

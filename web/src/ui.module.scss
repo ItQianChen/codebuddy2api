@@ -73,7 +73,7 @@ $white: var(--page);
   border: 1px solid #dce4d5;
   background: #fff;
   color: $ink;
-  border-radius: 9px;
+  border-radius: 12px;
   min-height: 36px;
   padding: 7px 13px;
   cursor: pointer;
@@ -84,7 +84,9 @@ $white: var(--page);
   text-decoration: none;
   transition:
     background 0.16s,
-    border-color 0.16s;
+    border-color 0.16s,
+    box-shadow 0.16s,
+    transform 0.16s;
   white-space: nowrap;
 }
 :global(button:hover:not(:disabled)),
@@ -96,11 +98,11 @@ $white: var(--page);
   cursor: not-allowed;
   opacity: 0.45;
 }
-:global(input:not([type="checkbox"]):not([type="radio"]):not([type="file"])),
+:global(input:where(:not([type="checkbox"], [type="radio"], [type="file"]))),
 :global(select),
 :global(textarea) {
   border: 1px solid #dce4d5;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #fff;
   color: $ink;
   padding: 9px 11px;
@@ -330,7 +332,6 @@ $white: var(--page);
 .header button {
   font-size: 11px;
   min-height: 30px;
-  background: #ffffff80;
 }
 .separator {
   margin: 0 13px;
@@ -564,44 +565,33 @@ $white: var(--page);
   max-height: calc(100vh - 16px);
   overflow: auto;
   padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 10px 26px var(--shadow);
+  @include glass(0.82, 22px);
+  border-radius: 14px;
 }
-.moreMenuList button {
+.moreMenuList button,
+.moreMenuList button:hover:not(:disabled),
+.moreMenuList button:active:not(:disabled) {
   width: 100%;
+  justify-content: flex-start;
   text-align: left;
   white-space: nowrap;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
 }
-// One bar of equal segments; the thumb glides under the selected one.
+.moreMenuList button:hover:not(:disabled) {
+  background: var(--selected);
+}
 .channelTrack {
   @include glass(0.42, 18px);
-  position: relative;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   padding: 4px;
   margin-bottom: 20px;
   border-radius: 18px;
 }
-.channelThumb {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 4px;
-  // The segments are equal, so translateX(n * 100%) lands on the nth one.
-  width: calc((100% - 8px) / 4);
-  border: 1px solid var(--accent);
-  border-radius: 14px;
-  background: linear-gradient(var(--selected), var(--selected)), glass-fill(0.6);
-  box-shadow:
-    inset 0 1px 0 var(--highlight),
-    0 4px 14px var(--shadow);
-  pointer-events: none;
-  transition: transform 0.32s cubic-bezier(0.3, 0.7, 0.2, 1);
-}
 .channelTrack button {
-  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -609,20 +599,8 @@ $white: var(--page);
   gap: 0 8px;
   min-width: 0;
   padding: 6px 10px;
-  border: 1px solid transparent;
   border-radius: 14px;
-  background: transparent;
-  color: var(--muted);
   white-space: normal;
-}
-// Outranks the global button hover; the thumb alone marks the selection.
-.channelTrack button:hover:not(:disabled) {
-  background: transparent;
-  border-color: transparent;
-  color: var(--text);
-}
-.channelTrack button.channelActive {
-  color: var(--strong);
 }
 .channelTrack button > span,
 .channelTrack small {
@@ -674,17 +652,66 @@ $white: var(--page);
   padding: 4px 11px;
   font-size: 11px;
   border-radius: 999px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
 }
+// Segmented bars: flat items on a track, with SegmentThumb gliding under the selected one.
+.channelTrack,
+.statusPills,
+.viewSwitch,
+.tabs {
+  position: relative;
+}
+.channelTrack button,
+.statusPills button,
+.viewSwitch button,
+.tabs button {
+  &,
+  &:hover:not(:disabled),
+  &:active:not(:disabled) {
+    position: relative;
+    color: var(--muted);
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+  }
+  &:hover:not(:disabled) {
+    color: var(--text);
+  }
+}
+.channelTrack button.channelActive,
 .statusPills button.pillActive,
-.viewSwitch button.viewActive {
-  @include glass-surface(0.7);
+.viewSwitch button.viewActive,
+.tabs button.selectedTab {
   color: var(--strong);
+  font-weight: 600;
+}
+.segmentThumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  background: linear-gradient(var(--selected), var(--selected)), glass-fill(0.6);
   box-shadow:
     inset 0 1px 0 var(--highlight),
-    0 2px 8px var(--shadow);
+    0 4px 14px var(--shadow);
+  pointer-events: none;
+}
+.statusPills .segmentThumb,
+.viewSwitch .segmentThumb {
+  border-radius: 999px;
+}
+.tabs .segmentThumb {
+  border-radius: 12px;
+}
+.segmentReady {
+  $glide: 0.32s cubic-bezier(0.3, 0.7, 0.2, 1);
+  transition:
+    transform $glide,
+    width $glide,
+    height $glide,
+    opacity 0.2s;
 }
 .credCardGrid {
   display: grid;
@@ -794,14 +821,13 @@ $white: var(--page);
   margin-top: 2px;
 }
 .iconBtn {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
   padding: 0;
   display: inline-grid;
   place-items: center;
   border-radius: 50%;
-  border: 1px solid var(--line);
-  background: var(--card);
   color: var(--text);
   flex-shrink: 0;
 }
@@ -1352,6 +1378,57 @@ $white: var(--page);
   font-size: 15px;
   letter-spacing: 0;
 }
+// Capsule and round variants of the shared glass button, for buttons and links alike.
+.pill {
+  min-height: 30px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+.pill svg {
+  width: 15px;
+  height: 15px;
+}
+.kpiCard .pill {
+  min-height: 28px;
+  padding: 3px 11px;
+  font-size: 11px;
+}
+// Narrow KPI cards keep only the icon, like the icon tiles of the other cards.
+@media (max-width: 600px) {
+  .kpiCard .pill {
+    width: 28px;
+    padding: 0;
+  }
+  .kpiCard .pillLabel {
+    display: none;
+  }
+}
+.roundButton {
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.roundButton svg {
+  width: 17px;
+  height: 17px;
+}
+// A KPI card that opens a drawer: the card look with the button layout undone. A flex
+// column also stops the browser from centring button content vertically in a tall card.
+.kpiAction {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  width: 100%;
+  min-height: 0;
+  text-align: left;
+  white-space: normal;
+}
 .releaseLayout {
   display: grid;
   grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
@@ -1513,8 +1590,9 @@ $white: var(--page);
 .mirrorList li {
   @include glass(0.34, 14px);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   padding: 9px 12px;
   border-radius: 14px;
   font-size: 12px;
@@ -1523,11 +1601,26 @@ $white: var(--page);
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .mirrorList button {
+  min-height: 30px;
   padding: 4px 12px;
   font-size: 11px;
 }
-.mirrorName {
+// The custom slot gives its input a line of its own; stats and buttons wrap below it.
+.mirrorCustom .mirrorName {
+  flex-basis: 100%;
+}
+.mirrorName input {
   flex: 1;
+  min-height: 32px;
+  padding: 5px 10px;
+}
+.mirrorActions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.mirrorName {
+  flex: 1 1 160px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1773,12 +1866,12 @@ $white: var(--page);
   align-items: center;
   gap: 8px;
 }
-.filterBar select {
+.filterBar .select {
   width: auto;
   min-height: 36px;
   padding: 6px 10px;
 }
-.toolbar > input {
+.toolbar > .search {
   width: min(360px, 70%);
 }
 .rowActions {
@@ -1964,7 +2057,6 @@ $white: var(--page);
   margin-top: 6px;
 }
 .drawerHead button {
-  background: #ffffff90;
   border-radius: 50%;
   width: 34px;
   min-height: 34px;
@@ -2109,23 +2201,22 @@ $white: var(--page);
 .tabs {
   display: flex;
   flex-wrap: wrap;
-  row-gap: 6px;
-  gap: 6px;
-  border-bottom: 1px solid $line;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
   margin-bottom: 20px;
+  border-radius: 16px;
+  background: var(--card);
+  border: 1px solid var(--highlight);
+  box-shadow:
+    inset 0 1px 3px var(--shadow),
+    inset 0 -1px 0 var(--highlight);
 }
 .tabs button {
-  border: 0;
-  border-radius: 0;
-  background: none;
-  color: #859378;
-  padding: 11px 21px;
-  border-bottom: 2px solid transparent;
-}
-.tabs .selectedTab {
-  color: $deep;
-  border-color: $green;
-  font-weight: 600;
+  min-height: 34px;
+  padding: 6px 16px;
+  border-radius: 12px;
 }
 .filters {
   display: flex;
@@ -2137,8 +2228,12 @@ $white: var(--page);
   flex: 1;
   width: 130px;
 }
-.filters select {
+.filters .select {
   max-width: 160px;
+}
+.filters .search {
+  flex: 1;
+  min-width: 160px;
 }
 .pagination {
   padding: 17px 22px;
@@ -2871,18 +2966,49 @@ $white: var(--page);
 }
 
 // Shared surface roles keep palettes out of dark mode and status colors independent.
+// Buttons are small glass slabs: unblurred, since many sit together inside blurred panels.
 :global(button),
-.linkButton,
-:global(input:not([type="checkbox"]):not([type="radio"]):not([type="file"])),
-:global(select),
-:global(textarea) {
-  background: var(--surface);
-  border-color: var(--line);
+.linkButton {
+  background: glass-fill(0.55);
+  border-color: var(--highlight);
+  box-shadow:
+    inset 0 1px 0 var(--highlight),
+    0 2px 8px var(--shadow);
 }
 :global(button:hover:not(:disabled)),
 .linkButton:hover {
-  background: var(--soft);
+  background: glass-fill(0.85);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--highlight),
+    0 6px 16px var(--shadow);
+  transform: translateY(-1px);
+}
+:global(button:active:not(:disabled)),
+.linkButton:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: inset 0 1px 3px var(--shadow);
+}
+// Text fields are recessed glass: a translucent well with an inner shade and a focus glow.
+:global(input:where(:not([type="checkbox"], [type="radio"], [type="file"]))),
+:global(select),
+:global(textarea) {
+  background: var(--card);
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  box-shadow:
+    inset 0 1px 3px var(--shadow),
+    inset 0 -1px 0 var(--highlight);
+  transition:
+    border-color 0.16s,
+    box-shadow 0.16s;
+}
+:global(input:where(:not([type="checkbox"], [type="radio"], [type="file"])):focus-visible),
+:global(textarea:focus-visible) {
+  outline: none;
   border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 3px var(--shadow),
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 :global(input::placeholder) {
   color: var(--muted);
@@ -2906,9 +3032,7 @@ $white: var(--page);
 :global(tbody tr:hover) {
   background: var(--soft);
 }
-.header button,
-.sidebarBar,
-.drawerHead button {
+.sidebarBar {
   background: color-mix(in srgb, var(--surface) 70%, transparent);
 }
 .navItem,
@@ -2917,6 +3041,8 @@ $white: var(--page);
 .navLabel,
 .stat > div,
 .stat small,
+.kpiCard > div,
+.kpiCard small,
 .empty h3,
 .empty p,
 .loading,
@@ -2938,17 +3064,12 @@ $white: var(--page);
 .rank {
   color: var(--muted);
 }
-.tabs button {
-  color: var(--muted);
-}
-.tabs .selectedTab {
-  color: var(--strong);
-}
 .separator {
   color: var(--line);
 }
 .note,
 .stat > div > span,
+.kpiCard > div > span:last-child,
 .rawData pre,
 .upload,
 .valueChip,
@@ -2983,10 +3104,48 @@ $white: var(--page);
     inset 0 1px 0 var(--highlight),
     0 5px 14px var(--shadow);
 }
+// A sheen across the top keeps the call to action glassy without losing its contrast.
+.primary {
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 18%, var(--primary)), var(--primary));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 45%, transparent),
+    0 6px 16px color-mix(in srgb, var(--primary) 32%, transparent);
+}
 .primary:hover:not(:disabled) {
-  background: var(--primary-hover);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, #fff 18%, var(--primary-hover)),
+    var(--primary-hover)
+  );
   color: var(--on-primary);
   border-color: var(--primary-hover);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 45%, transparent),
+    0 8px 20px color-mix(in srgb, var(--primary) 38%, transparent);
+}
+.danger,
+.danger:hover:not(:disabled) {
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 16%, #a74436), #a74436);
+  border-color: #a74436;
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent),
+    0 6px 16px color-mix(in srgb, #a74436 30%, transparent);
+}
+.danger:hover:not(:disabled) {
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 16%, #90382c), #90382c);
+  border-color: #90382c;
+}
+.spinner {
+  display: inline-flex;
+}
+.spinning {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .good,
 .successNotice {
@@ -3049,6 +3208,8 @@ $white: var(--page);
   right: 24px;
   top: 22px;
   z-index: 2;
+  display: flex;
+  gap: 8px;
 }
 .header .appearanceButton,
 .appearanceButton {
@@ -3056,6 +3217,12 @@ $white: var(--page);
   width: 36px;
   height: 36px;
   padding: 7px;
+}
+.langGlyph {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.2px;
 }
 .appearanceDrawer {
   width: min(380px, 100%);
@@ -3070,8 +3237,7 @@ $white: var(--page);
   padding: 0 24px 20px;
 }
 .appearanceChoices,
-.paletteChoices,
-.langChoices {
+.paletteChoices {
   border: 0;
   padding: 0;
   margin: 18px 0 24px;
@@ -3080,28 +3246,36 @@ $white: var(--page);
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .appearanceChoices legend,
-.paletteChoices legend,
-.langChoices legend {
+.paletteChoices legend {
   margin-bottom: 12px;
   font-size: 12px;
   color: var(--muted);
 }
 .appearanceChoices label,
 .paletteChoices label {
+  @include glass-surface(0.4);
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   padding: 14px 4px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   cursor: pointer;
   font-size: 11px;
+  color: var(--muted);
+  transition:
+    transform 0.16s,
+    border-color 0.16s,
+    box-shadow 0.16s;
+}
+.appearanceChoices label:hover,
+.paletteChoices label:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  transform: translateY(-1px);
 }
 .appearanceChoices input,
-.paletteChoices input,
-.langChoices input {
+.paletteChoices input {
   position: absolute;
   opacity: 0;
   inset: 0;
@@ -3113,7 +3287,11 @@ $white: var(--page);
 .appearanceChoices label:has(:checked),
 .paletteChoices label:has(:checked) {
   border-color: var(--accent);
-  background: var(--selected);
+  background: linear-gradient(var(--selected), var(--selected)), glass-fill(0.6);
+  color: var(--strong);
+  box-shadow:
+    inset 0 1px 0 var(--highlight),
+    0 6px 16px var(--shadow);
 }
 .appearanceChoices label:has(:focus-visible),
 .paletteChoices label:has(:focus-visible) {
@@ -3123,11 +3301,19 @@ $white: var(--page);
 .paletteChoices {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+// Glossy beads: a light rim on top and a soft shade underneath.
 .paletteChoices label > span:first-of-type {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  box-shadow: inset 0 1px 2px #ffffff70;
+  box-shadow:
+    inset 0 2px 3px #ffffff90,
+    inset 0 -2px 4px #00000026,
+    0 2px 6px var(--shadow);
+}
+.appearanceDrawer .note {
+  @include glass-well;
+  border-radius: 14px;
 }
 .paletteChoices:disabled {
   opacity: 0.5;
@@ -3475,7 +3661,7 @@ $white: var(--page);
     flex-wrap: wrap;
     padding-inline: 15px;
   }
-  .toolbar > input {
+  .toolbar > .search {
     width: 100%;
   }
   .panelHeading {
@@ -3528,22 +3714,128 @@ $white: var(--page);
   }
 }
 
-.langChoices label {
+// Select: a glass combobox button with a chevron, and its listbox popover.
+.select {
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 38px;
+  padding: 7px 10px 7px 12px;
+  text-align: left;
+}
+.selectValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selectChevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--muted);
+  transition: transform 0.2s ease;
+}
+.select[aria-expanded="true"] .selectChevron {
+  transform: rotate(180deg);
+}
+.selectList {
+  @include glass(0.82, 22px);
+  position: fixed;
+  z-index: 60;
+  max-height: min(320px, 60vh);
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+  border-radius: 14px;
+  animation: popIn 0.14s ease-out;
+}
+.selectList li {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 64px;
-  margin: 0 auto;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  cursor: pointer;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 10px;
   font-size: 12px;
-  position: relative;
-  color: var(--muted);
+  white-space: nowrap;
+  color: var(--text);
+  cursor: pointer;
 }
-.langChoices label:has(:checked) {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--soft);
+.selectList li.selectActive {
+  background: var(--selected);
+}
+.selectList li[aria-selected="true"] {
+  color: var(--strong);
+  font-weight: 600;
+}
+// A dot marks the chosen option, so it stays visible while another one is highlighted.
+.selectList li[aria-selected="true"]::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.selectList li[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.moreMenuList {
+  animation: popIn 0.14s ease-out;
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+// Search: the shared field with a leading icon and a clear button inside it.
+.search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.search input {
+  width: 100%;
+  padding-left: 34px;
+  padding-right: 34px;
+}
+.searchIcon {
+  position: absolute;
+  left: 12px;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  color: var(--muted);
+  pointer-events: none;
+}
+.searchClear {
+  position: absolute;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+}
+.searchClear svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
 }

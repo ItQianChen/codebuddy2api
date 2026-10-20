@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { api, useResource } from "./api";
 import { Logs } from "./pages/Logs";
+import { choose } from "./test-utils";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -30,6 +31,7 @@ beforeEach(() => {
       next_cursor: null,
     },
     loading: false,
+    refreshing: false,
     error: null,
     reload: vi.fn(),
   });
@@ -60,6 +62,7 @@ describe("runtime event labels", () => {
         next_cursor: null,
       },
       loading: false,
+      refreshing: false,
       error: null,
       reload: vi.fn(),
     });
@@ -119,6 +122,7 @@ describe("credit changes tab", () => {
         next_cursor: null,
       },
       loading: false,
+      refreshing: false,
       error: null,
       reload: vi.fn(),
     });
@@ -131,8 +135,8 @@ describe("credit changes tab", () => {
     expect(screen.getByText("+500")).toBeTruthy();
     expect(screen.getByText("-70.5")).toBeTruthy();
     expect(screen.getByText("体验积分")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("筛选账号"), { target: { value: account } });
-    fireEvent.change(screen.getByLabelText("筛选变动类型"), { target: { value: "income" } });
+    choose(screen.getByLabelText("筛选账号"), account);
+    choose(screen.getByLabelText("筛选变动类型"), "income");
     fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
     const call = vi.mocked(useResource).mock.calls.at(-1)![0] as string;
     expect(call).toContain("kind=credit");
@@ -234,6 +238,7 @@ it("shows the persisted daily Buddy warning from event details", () => {
       next_cursor: null,
     },
     loading: false,
+    refreshing: false,
     error: null,
     reload: vi.fn(),
   });

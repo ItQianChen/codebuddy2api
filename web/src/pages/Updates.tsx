@@ -2,9 +2,19 @@ import { useEffect, useState } from "react";
 import { NavLink, useParams } from "react-router";
 import { api, errorMessage, list, number, object, text, useResource } from "../api";
 import { useT } from "../i18n";
-import { Badge, Empty, ErrorNotice, Icon, PageTitle, Panel, ResourceState } from "../components";
+import {
+  Badge,
+  DrawerPresence,
+  Empty,
+  ErrorNotice,
+  Icon,
+  PageTitle,
+  Panel,
+  RefreshIcon,
+  ResourceState,
+} from "../components";
 import { Markdown } from "../markdown";
-import { MirrorPanel } from "../MirrorPanel";
+import { MirrorCard, MirrorDrawer } from "../MirrorDrawer";
 import { UpdateProgress, type UpdateJob } from "../UpdateProgress";
 import s from "../ui.module.scss";
 
@@ -31,6 +41,7 @@ type UpdateState = {
   job: UpdateJob;
   mirror: string;
   mirrors: string[];
+  mirrorCustom: string;
   mirrorLocked: boolean;
 };
 
@@ -81,6 +92,7 @@ function normalize(value: unknown): UpdateState {
     mirrors: Array.isArray(d.mirrors)
       ? d.mirrors.filter((item): item is string => typeof item === "string")
       : [],
+    mirrorCustom: typeof d.mirror_custom === "string" ? d.mirror_custom : "",
     mirrorLocked: d.mirror_locked === true,
   };
 }
@@ -194,6 +206,7 @@ export function Updates() {
   const { reload } = resource;
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [mirrorOpen, setMirrorOpen] = useState(false);
   const d = resource.data;
   const running = d?.job.status === "running";
   useEffect(() => {
@@ -206,6 +219,15 @@ export function Updates() {
   const selected = d && (tag ? d.releases.find((item) => item.tag === tag) : latest);
   const canInstall = (release: Release | undefined): release is Release =>
     Boolean(d?.selfUpdate && !busy && release?.installable && release.version !== d.current);
+  const check = () => {
+    setChecking(true);
+    setCheckError(null);
+    void api
+      .post("/update/check")
+      .then(reload)
+      .catch((err: unknown) => setCheckError(errorMessage(err)))
+      .finally(() => setChecking(false));
+  };
   const install = (release: Release) =>
     d && (
       <InstallAction
@@ -217,34 +239,7 @@ export function Updates() {
     );
   return (
     <>
-      <PageTitle
-        title={t("updates.title")}
-        description={t("updates.desc")}
-        actions={
-          <>
-            {d && (
-              <Badge tone={d.updateAvailable ? "warn" : d.latest ? "good" : "neutral"}>
-                v{d.current}
-              </Badge>
-            )}
-            <button
-              disabled={checking}
-              onClick={() => {
-                setChecking(true);
-                setCheckError(null);
-                void api
-                  .post("/update/check")
-                  .then(reload)
-                  .catch((err: unknown) => setCheckError(errorMessage(err)))
-                  .finally(() => setChecking(false));
-              }}
-            >
-              <Icon name="refresh" />
-              {checking ? t("updates.checking") : t("updates.check")}
-            </button>
-          </>
-        }
-      />
+      <PageTitle title={t("updates.title")} description={t("updates.desc")} />
       <ResourceState {...resource} />
       <ErrorNotice message={checkError ?? d?.error ?? null} />
       {d && (
@@ -253,9 +248,18 @@ export function Updates() {
             <article className={s.kpiCard}>
               <div>
                 <span>{t("updates.current")}</span>
-                <span>
-                  <Icon name="leaf" />
-                </span>
+                <button
+                  type="button"
+                  className={s.pill}
+                  aria-label={t("updates.check")}
+                  disabled={checking}
+                  onClick={check}
+                >
+                  <RefreshIcon spinning={checking} />
+                  <span className={s.pillLabel}>
+                    {checking ? t("updates.checking") : t("updates.check")}
+                  </span>
+                </button>
               </div>
               <strong>v{d.current}</strong>
               <small>{t(`updates.deploy.${d.deployment}`)}</small>
@@ -288,47 +292,58 @@ export function Updates() {
               </strong>
               <small>{t("updates.autoCheck")}</small>
             </article>
+            <MirrorCard mirror={d.mirror} onOpen={() => setMirrorOpen(true)} />
           </div>
-          <div className={s.stack}>
-            <div className={s.storageSplit}>
-              <Panel title={t("updates.panel")} hint={t("updates.panelHint")}>
-                <div className={s.panelBody}>
-                  <p className={s.storageLead}>
-                    {t("updates.repository")}：
-                    {d.repository ? (
-                      <a href={d.repository} target="_blank" rel="noreferrer">
-                        {d.repository}
-                      </a>
-                    ) : (
-                      "—"
-                    )}
-                  </p>
-                  <UpdateProgress job={d.job} />
-                  {d.selfUpdate ? (
-                    d.updateAvailable && canInstall(latest) ? (
-                      install(latest)
-                    ) : (
-                      !busy && (
-                        <p className={s.storageLead}>
-                          {d.latest ? t("updates.upToDate") : t("updates.unknown")}
-                        </p>
-                      )
-                    )
-                  ) : (
-                    <>
-                      <p className={s.storageLead}>{d.blockReason}</p>
-                      <Guidance deployment={d.deployment} />
-                    </>
-                  )}
-                </div>
-              </Panel>
-              <MirrorPanel
+          <DrawerPresence>
+            {mirrorOpen && (
+              <MirrorDrawer
                 mirror={d.mirror}
                 mirrors={d.mirrors}
+                custom={d.mirrorCustom}
                 locked={d.mirrorLocked}
                 onSaved={reload}
+                onClose={() => setMirrorOpen(false)}
               />
-            </div>
+            )}
+          </DrawerPresence>
+          <div className={s.stack}>
+            <Panel
+              title={t("updates.panel")}
+              action={
+                d.repository && (
+                  <a
+                    className={`${s.linkButton} ${s.roundButton}`}
+                    href={d.repository}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={t("updates.repository")}
+                    title={d.repository}
+                  >
+                    <Icon name="github" />
+                  </a>
+                )
+              }
+            >
+              <div className={s.panelBody}>
+                <UpdateProgress job={d.job} />
+                {d.selfUpdate ? (
+                  d.updateAvailable && canInstall(latest) ? (
+                    install(latest)
+                  ) : (
+                    !busy && (
+                      <p className={s.storageLead}>
+                        {d.latest ? t("updates.upToDate") : t("updates.unknown")}
+                      </p>
+                    )
+                  )
+                ) : (
+                  <>
+                    <p className={s.storageLead}>{d.blockReason}</p>
+                    <Guidance deployment={d.deployment} />
+                  </>
+                )}
+              </div>
+            </Panel>
             <Panel title={t("updates.releases")} hint={t("updates.releasesHint")}>
               {d.releases.length ? (
                 <div className={s.releaseLayout}>
@@ -361,7 +376,13 @@ export function Updates() {
                             <small>{date(selected.publishedAt)}</small>
                           </div>
                           {selected.url && (
-                            <a href={selected.url} target="_blank" rel="noreferrer">
+                            <a
+                              className={`${s.linkButton} ${s.pill}`}
+                              href={selected.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <Icon name="github" />
                               {t("updates.openGithub")}
                             </a>
                           )}

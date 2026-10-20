@@ -13,6 +13,7 @@ import {
   specRange,
 } from "./modelMetadata";
 import { Models } from "./pages/Models";
+import { choose } from "./test-utils";
 
 const model: ModelRule = {
   id: "upstream",
@@ -82,9 +83,7 @@ describe("model declarations", () => {
     expect(screen.getByText("可选强度")).toBeTruthy();
     expect(screen.getByText("可选窗口")).toBeTruthy();
     expect(container.querySelector("img")).toBeNull();
-    fireEvent.change(screen.getByRole("combobox", { name: "查看产品声明" }), {
-      target: { value: "intl-work" },
-    });
+    choose(screen.getByRole("combobox", { name: "查看产品声明" }), "intl-work");
     expect(screen.getByText("English description")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "声明 2" })).toBeTruthy();
     expect(screen.queryByText("中文说明", { selector: "span" })).toBeNull();

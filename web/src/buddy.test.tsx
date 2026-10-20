@@ -148,6 +148,7 @@ it("opens confirmation only from a scoped manual travel result", async () => {
   vi.mocked(useResource).mockReturnValue({
     data: [credential],
     loading: false,
+    refreshing: false,
     error: null,
     reload: vi.fn(),
   });
@@ -195,6 +196,7 @@ it("shows partial completion when checkin succeeds but Buddy prerequisites block
   vi.mocked(useResource).mockReturnValue({
     data: [credential],
     loading: false,
+    refreshing: false,
     error: null,
     reload: vi.fn(),
   });

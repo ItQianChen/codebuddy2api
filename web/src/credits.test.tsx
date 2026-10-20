@@ -27,6 +27,7 @@ function renderWith(row: Credential) {
     data: [row],
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   });
   render(<Credentials />);

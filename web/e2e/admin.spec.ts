@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { choose } from "./select";
 const model = {
   id: "mock-model",
   public_id: "mock-model",
@@ -295,13 +296,13 @@ test("international OAuth choices send distinct sites and show the selected offi
   await page.goto("/dashboard/credentials");
   await page.getByRole("button", { name: "添加凭证" }).click();
   const select = page.getByLabel("登录站点");
-  await expect(select).toHaveValue("cn");
+  await expect(select).toHaveText("中国大陆 · CN");
   for (const [site, label, host] of [
     ["intl", "国际 · WorkBuddy", "www.workbuddy.ai"],
     ["intl-codebuddy", "国际 · CodeBuddy", "www.codebuddy.ai"],
   ]) {
-    await select.selectOption({ label });
-    await expect(select).toHaveValue(site);
+    await choose(select, site);
+    await expect(select).toHaveText(label);
     await page.getByRole("button", { name: "发起 OAuth 授权" }).click();
     await expect(page.getByRole("link", { name: /打开官方授权页面/ })).toHaveAttribute(
       "href",
@@ -325,7 +326,7 @@ test("log tabs, cursor, details and guarded destructive clear", async ({ page })
   await expect(page.getByText("mock.operation")).toBeVisible();
   await page.getByRole("tab", { name: "管理操作" }).click();
   await page.getByRole("button", { name: "清理日志" }).click();
-  await page.getByLabel("清理范围").selectOption("all");
+  await choose(page.getByLabel("清理范围"), "all");
   await expect(page.getByRole("button", { name: "确认不可撤销的清理" })).toBeDisabled();
   await page.getByLabel("输入“清空全部日志与统计”").fill("清空全部日志与统计");
   await page.getByLabel("当前 API key").fill("mock-revalidation-key");

@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import type { ModelRule, RecordValue } from "./api";
 import { Badge, DataValue, Empty, Panel, profileLabel } from "./components";
 import s from "./ui.module.scss";
+import { Select } from "./fields";
 
 type Facts = Pick<ModelRule, "capabilities" | "limits" | "metadata_by_profile">;
 const record = (value: unknown): RecordValue =>
@@ -404,13 +405,13 @@ export function ModelMetadata({ model }: { model: Facts }) {
         <>
           <label className={s.field}>
             查看产品声明
-            <select value={active[0]} onChange={(event) => setSelected(event.target.value)}>
+            <Select value={active[0]} onChange={(value) => setSelected(value)}>
               {sources.map(([profile]) => (
                 <option key={profile} value={profile}>
                   {profileLabel(profile)}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           {active[1].length > 1 && (
             <p className={s.note}>同一产品的账号声明存在差异；以下保留各版本，不公开账号身份。</p>

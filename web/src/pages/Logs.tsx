@@ -17,7 +17,8 @@ import {
   Empty,
   ErrorNotice,
   Fields,
-  Icon,
+  RefreshIcon,
+  SegmentThumb,
   PageTitle,
   Panel,
   ResourceState,
@@ -27,6 +28,7 @@ import { CreditFilters, CreditRow, useAccountNames } from "../CreditChanges";
 import { profiles } from "./Models";
 import s from "../ui.module.scss";
 import { t, useT } from "../i18n";
+import { SearchInput, Select } from "../fields";
 function normalize(value: unknown) {
   const data = object(value);
   if (typeof data.has_more !== "boolean" || (data.has_more && typeof data.next_cursor !== "string"))
@@ -116,7 +118,7 @@ export function Logs() {
         actions={
           <>
             <button onClick={resource.reload}>
-              <Icon name="refresh" />
+              <RefreshIcon spinning={resource.refreshing} />
               {t("logs.refresh")}
             </button>
             <button onClick={() => setClear(true)}>{t("logs.clear")}</button>
@@ -124,6 +126,7 @@ export function Logs() {
         }
       />
       <div className={s.tabs} role="tablist" aria-label={t("logs.logTypes")}>
+        <SegmentThumb />
         {[
           ["request", t("logs.tab.request")],
           ["runtime", t("logs.tab.runtime")],
@@ -187,27 +190,27 @@ export function Logs() {
                 value={draft.client_ip}
                 onChange={(e) => setDraft({ ...draft, client_ip: e.target.value })}
               />
-              <select
+              <Select
                 aria-label={t("logs.filter.profile")}
                 value={draft.profile}
-                onChange={(e) => setDraft({ ...draft, profile: e.target.value })}
+                onChange={(value) => setDraft({ ...draft, profile: value })}
               >
                 <option value="">{t("logs.allProfiles")}</option>
                 {profiles.map((p) => (
                   <option key={p}>{p}</option>
                 ))}
-              </select>
-              <select
+              </Select>
+              <Select
                 aria-label={t("logs.filter.status")}
                 value={draft.status}
-                onChange={(e) => setDraft({ ...draft, status: e.target.value })}
+                onChange={(value) => setDraft({ ...draft, status: value })}
               >
                 <option value="">{t("logs.allStatuses")}</option>
                 <option value="success">{t("logs.outcome.success")}</option>
                 <option value="error">{t("logs.outcome.error")}</option>
                 <option value="cancelled">{t("logs.outcome.cancelled")}</option>
                 <option value="429">{t("logs.http429")}</option>
-              </select>
+              </Select>
             </>
           )}
           {kind === "credit" && (
@@ -218,11 +221,11 @@ export function Logs() {
               onChange={(patch) => setDraft({ ...draft, ...patch })}
             />
           )}
-          <input
+          <SearchInput
             aria-label={t("logs.filter.search")}
             placeholder={t("logs.placeholder.search")}
             value={draft.search}
-            onChange={(e) => setDraft({ ...draft, search: e.target.value })}
+            onChange={(search) => setDraft({ ...draft, search })}
           />
           <button type="submit">{t("logs.apply")}</button>
           <button

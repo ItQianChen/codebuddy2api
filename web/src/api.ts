@@ -164,11 +164,13 @@ export function useResource<T>(
     path: string;
     data: T | null;
     loading: boolean;
+    refreshing: boolean;
     error: string | null;
   }>({
     path,
     data: cached === undefined ? null : normalize(cached),
     loading: cached === undefined,
+    refreshing: true,
     error: null,
   });
   const [revision, setRevision] = useState(0);
@@ -185,14 +187,20 @@ export function useResource<T>(
           : cachedForPath === undefined
             ? null
             : normalize(cachedForPath);
-      return { path, data, loading: data === null, error: null };
+      return { path, data, loading: data === null, refreshing: true, error: null };
     });
     void api
       .get<unknown>(path, { signal: controller.signal })
       .then((response) => {
         if (controller.signal.aborted) return;
         if (options?.cache) resourceCache.set(path, response.data);
-        setState({ path, data: normalize(response.data), loading: false, error: null });
+        setState({
+          path,
+          data: normalize(response.data),
+          loading: false,
+          refreshing: false,
+          error: null,
+        });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -200,6 +208,7 @@ export function useResource<T>(
           path,
           data: prev.path === path ? prev.data : null,
           loading: false,
+          refreshing: false,
           error: errorMessage(error),
         }));
       });
@@ -210,6 +219,8 @@ export function useResource<T>(
   return {
     data: currentData,
     loading: state.path === path ? state.loading : cached === undefined,
+    // True during every fetch, including reloads that keep the previous data on screen.
+    refreshing: state.path === path ? state.refreshing : true,
     error: state.path === path ? state.error : null,
     reload,
   };

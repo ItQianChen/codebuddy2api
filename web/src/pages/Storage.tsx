@@ -8,6 +8,7 @@ import {
   Empty,
   ErrorNotice,
   Icon,
+  RefreshIcon,
   PageTitle,
   Panel,
   ResourceState,
@@ -207,7 +208,7 @@ export function Storage() {
               </Badge>
             )}
             <button onClick={resource.reload}>
-              <Icon name="refresh" />
+              <RefreshIcon spinning={resource.refreshing} />
               {t("dash.refresh")}
             </button>
           </>

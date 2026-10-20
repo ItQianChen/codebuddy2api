@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { api } from "./api";
 import { Dashboard, Trend } from "./pages/Dashboard";
+import { choose } from "./test-utils";
 afterEach(() => vi.restoreAllMocks());
 
 describe("truthful sparse request trends", () => {
@@ -60,11 +61,11 @@ describe("dashboard granularity", () => {
     });
     render(<Dashboard />);
     await screen.findByRole("img", { name: "按日用量趋势" });
-    fireEvent.change(screen.getByLabelText("统计时间范围"), { target: { value: "1" } });
+    choose(screen.getByLabelText("统计时间范围"), "1");
     const hourly = await screen.findByRole("img", { name: "按小时用量趋势" });
     expect(hourly.querySelectorAll('[data-series="requests"] circle')).toHaveLength(24);
     expect(get).toHaveBeenCalledWith("/dashboard?days=1&granularity=auto", expect.anything());
-    fireEvent.change(screen.getByLabelText("统计粒度"), { target: { value: "day" } });
+    choose(screen.getByLabelText("统计粒度"), "day");
     await waitFor(() =>
       expect(
         screen

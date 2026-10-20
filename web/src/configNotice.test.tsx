@@ -23,6 +23,7 @@ function payload(configNotice?: Record<string, unknown>) {
     },
     reload: vi.fn(),
     loading: false,
+    refreshing: false,
     error: null,
   };
 }

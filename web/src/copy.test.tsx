@@ -13,7 +13,13 @@ vi.mock("./api", async (original) => ({
 }));
 beforeEach(() => vi.restoreAllMocks());
 function resource(data: unknown) {
-  vi.mocked(useResource).mockReturnValue({ data, error: null, loading: false, reload: vi.fn() });
+  vi.mocked(useResource).mockReturnValue({
+    data,
+    error: null,
+    loading: false,
+    refreshing: false,
+    reload: vi.fn(),
+  });
 }
 const settings = {
   revision: 7,

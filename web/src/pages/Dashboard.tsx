@@ -18,6 +18,7 @@ import {
   ErrorNotice,
   Fields,
   Icon,
+  RefreshIcon,
   PageTitle,
   Panel,
   ResourceState,
@@ -134,6 +135,7 @@ function OfficialCredits({ value }: { value: unknown }) {
 }
 import { KpiCards, UsageTrend } from "../UsageOverview";
 import { t, useT } from "../i18n";
+import { Select } from "../fields";
 
 function ConfigNotice({ notice, onDismiss }: { notice: RecordValue; onDismiss: () => void }) {
   const t = useT();
@@ -239,33 +241,29 @@ export function Dashboard() {
         title={t("dash.runtime")}
         actions={
           <>
-            <select
-              aria-label={t("dash.range")}
-              value={days}
-              onChange={(e) => setDays(e.target.value)}
-            >
+            <Select aria-label={t("dash.range")} value={days} onChange={(value) => setDays(value)}>
               {["1", "7", "30", "90"].map((n) => (
                 <option value={n} key={n}>
                   {t("dash.lastNDays", { n })}
                 </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               aria-label={t("dash.granularity")}
               value={granularity}
-              onChange={(e) => setGranularity(e.target.value)}
+              onChange={(value) => setGranularity(value)}
             >
               <option value="auto">{t("dash.granularityAuto")}</option>
               <option value="hour">{t("dash.granularityHour")}</option>
               <option value="day">{t("dash.granularityDay")}</option>
-            </select>
+            </Select>
             <button
               onClick={() => {
                 resource.reload();
                 hourly.reload();
               }}
             >
-              <Icon name="refresh" />
+              <RefreshIcon spinning={resource.refreshing || hourly.refreshing} />
               {t("dash.refresh")}
             </button>
           </>

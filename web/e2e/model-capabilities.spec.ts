@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { choose } from "./select";
 
 for (const width of [1440, 375]) {
   test(`model declarations, profile variants and preflight settings at ${width}px`, async ({
@@ -119,9 +120,9 @@ for (const width of [1440, 375]) {
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByText("仅用于浏览器回归的模型说明", { exact: true })).toBeVisible();
     await expect(dialog.getByText("可选强度", { exact: true })).toBeVisible();
-    await dialog.getByRole("combobox", { name: "查看产品声明" }).selectOption("intl-work");
+    await choose(dialog.getByRole("combobox", { name: "查看产品声明" }), "intl-work");
     await expect(dialog.getByRole("heading", { name: "声明 2" })).toBeVisible();
-    await dialog.getByRole("combobox", { name: "查看产品声明" }).selectOption("intl-cli");
+    await choose(dialog.getByRole("combobox", { name: "查看产品声明" }), "intl-cli");
     await expect(dialog.getByRole("heading", { name: "共享目录来源" })).toBeVisible();
     await dialog.getByText(/来源版本 1/).click();
     await expect(dialog.getByText("共享原始声明", { exact: true })).toBeVisible();

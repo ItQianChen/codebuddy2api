@@ -46,20 +46,22 @@ describe("i18n", () => {
   it("falls back to the key itself when an entry is missing", () => {
     expect(translate("missing.key.entirely")).toBe("missing.key.entirely");
   });
-  it("applies language choices made in the appearance drawer", async () => {
-    const { Appearance } = await import("./appearance");
+  it("cycles the interface language with the header toggle", async () => {
+    const { LanguageToggle } = await import("./appearance");
     render(
       <LanguageProvider>
-        <Appearance />
+        <LanguageToggle />
         <ProbeText />
       </LanguageProvider>,
     );
     expect(screen.getByTestId("probe").textContent).toBe("Overview");
-    fireEvent.click(screen.getByRole("button", { name: "外观设置" }));
-    fireEvent.click(document.querySelector('input[name="ui-language"][value="zh"]')!);
+    fireEvent.click(screen.getByRole("button", { name: /^Language: System/ }));
     expect(localStorage.getItem("codebuddy2api.lang")).toBe("zh");
     expect(screen.getByTestId("probe").textContent).toBe("概览");
-    fireEvent.click(document.querySelector('input[name="ui-language"][value="system"]')!);
+    fireEvent.click(screen.getByRole("button", { name: /^界面语言：中文/ }));
+    expect(localStorage.getItem("codebuddy2api.lang")).toBe("en");
+    expect(screen.getByRole("button", { name: /^Language: English/ }).textContent).toBe("EN");
+    fireEvent.click(screen.getByRole("button", { name: /^Language: English/ }));
     expect(localStorage.getItem("codebuddy2api.lang")).toBe("system");
     expect(screen.getByTestId("probe").textContent).toBe("Overview");
   });

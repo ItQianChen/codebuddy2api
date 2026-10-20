@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { OAuth } from "../OAuth";
 import { Trial } from "../Trial";
@@ -30,6 +30,8 @@ import {
   ErrorNotice,
   Fields,
   Icon,
+  RefreshIcon,
+  SegmentThumb,
   PageTitle,
   Panel,
   ResourceState,
@@ -45,6 +47,8 @@ import {
 } from "../imports";
 import { downloadFilename } from "../downloads";
 import s from "../ui.module.scss";
+import { SearchInput, Select } from "../fields";
+import { popoverHost, usePopover } from "../popover";
 
 function expiry(value: unknown) {
   return typeof value === "number" ? new Date(value * 1000).toLocaleString("zh-CN") : text(value);
@@ -140,6 +144,7 @@ function ImportDrawer({ onClose, onDone }: { onClose: () => void; onDone: () => 
   return (
     <Drawer title="导入凭证" onClose={onClose} dismissDisabled={busy}>
       <div className={s.tabs} role="tablist" aria-label="导入方式">
+        <SegmentThumb />
         {(
           [
             ["file", "文件导入"],
@@ -188,17 +193,17 @@ function ImportDrawer({ onClose, onDone }: { onClose: () => void; onDone: () => 
           </p>
           <label className={s.field}>
             端点
-            <select
+            <Select
               value={profile}
               disabled={busy}
-              onChange={(e) => setProfile(e.target.value as RefreshProfile)}
+              onChange={(value) => setProfile(value as RefreshProfile)}
             >
               {REFRESH_PROFILES.map((item) => (
                 <option key={item.value} value={item.value}>
                   {item.label}（{item.value}）
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className={s.field}>
             刷新令牌
@@ -330,56 +335,14 @@ function MoreMenu({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
-  const ref = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  // The menu is portaled to <body>: panels use backdrop-filter, which would make a
-  // locally fixed menu resolve against the panel and drift outside the viewport.
-  const place = useCallback(() => {
-    const trigger = ref.current?.querySelector<HTMLElement>("button");
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    const menu = menuRef.current;
-    const width = menu?.offsetWidth || 160;
-    const height = menu?.offsetHeight || 220;
-    const margin = 8;
-    const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
-    let top = rect.bottom + 4;
-    if (top + height > window.innerHeight - margin) top = Math.max(margin, rect.top - height - 4);
-    setPosition({ top, left });
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    const onMove = () => place();
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("resize", onMove);
-    window.addEventListener("scroll", onMove, true);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", onMove);
-      window.removeEventListener("scroll", onMove, true);
-    };
-  }, [open, place]);
-
-  useLayoutEffect(() => {
-    setPosition(null);
-    if (open) place();
-  }, [open, place]);
-
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const menu = useRef<HTMLDivElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  const placement = usePopover(open, close, trigger, menu, "end");
   return (
-    <div className={s.moreMenu} ref={ref}>
+    <div className={s.moreMenu}>
       <button
+        ref={trigger}
         aria-label={label}
         aria-expanded={open}
         aria-haspopup="menu"
@@ -390,15 +353,17 @@ function MoreMenu({
       {open &&
         createPortal(
           <div
-            ref={menuRef}
+            ref={menu}
             className={s.moreMenuList}
             role="menu"
-            style={position ? { top: position.top, left: position.left } : { visibility: "hidden" }}
-            onClick={() => setOpen(false)}
+            style={
+              placement ? { top: placement.top, left: placement.left } : { visibility: "hidden" }
+            }
+            onClick={close}
           >
             {children}
           </div>,
-          document.body,
+          popoverHost(trigger.current),
         )}
     </div>
   );
@@ -445,6 +410,8 @@ export function Credentials() {
       cancelled = true;
     };
   }, [liveDetail, detail?.tab]);
+  // The maintenance action in flight and its account, or "*" for every account.
+  const [running, setRunning] = useState<string | null>(null);
   const maintain = (
     action:
       | "refresh"
@@ -458,6 +425,7 @@ export function Credentials() {
   ) => {
     if (busy) return;
     setBusy(true);
+    setRunning(`${action}:${credential?.id ?? "*"}`);
     setError(null);
     setMaintenance([]);
     const path = credential
@@ -490,6 +458,7 @@ export function Credentials() {
       )
       .finally(() => {
         setBusy(false);
+        setRunning(null);
         resource.reload();
       });
   };
@@ -614,7 +583,7 @@ export function Credentials() {
       title="同步余额"
       onClick={() => maintain("sync", c)}
     >
-      <Icon name="refresh" />
+      <RefreshIcon spinning={running === `sync:${c.id}` || running === "sync:*"} />
     </button>
   );
   const renderActions = (c: Credential) => {
@@ -941,7 +910,7 @@ export function Credentials() {
         actions={
           <>
             <button onClick={resource.reload}>
-              <Icon name="refresh" />
+              <RefreshIcon spinning={resource.refreshing} />
               刷新列表
             </button>
             <button disabled={busy} onClick={() => maintain("sync")}>
@@ -974,18 +943,7 @@ export function Credentials() {
       {!detail && <ErrorNotice message={error} />}
       {resource.data && (
         <div className={s.channelTrack} role="group" aria-label="区域与账号类型筛选">
-          <span
-            className={s.channelThumb}
-            aria-hidden="true"
-            style={{
-              transform: `translateX(${
-                Math.max(
-                  0,
-                  channelDefs.findIndex(([key]) => key === channel),
-                ) * 100
-              }%)`,
-            }}
-          />
+          <SegmentThumb />
           {channelDefs.map(([key, label, hint]) => {
             const group = key === "all" ? allItems : allItems.filter((c) => channelOf(c) === key);
             const ready = group.filter(isReady).length;
@@ -1054,17 +1012,18 @@ export function Credentials() {
               />
               全选
             </label>
-            <input
+            <SearchInput
               className={s.credSearch}
               aria-label="搜索凭证"
               placeholder="搜索账号文件名、昵称或 UID…"
               value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
+              onChange={(value) => {
+                setQuery(value);
                 setPage(1);
               }}
             />
             <div className={s.statusPills} role="group" aria-label="状态筛选">
+              <SegmentThumb />
               {(
                 [
                   ["all", "全部"],
@@ -1092,6 +1051,7 @@ export function Credentials() {
             )}
           </div>
           <div className={s.viewSwitch} role="group" aria-label="视图切换">
+            <SegmentThumb />
             <button
               type="button"
               aria-pressed={view === "cards"}
@@ -1253,17 +1213,17 @@ export function Credentials() {
                   {Math.min(filtered.length, safePage * pageSize)} 条 · 共 {filtered.length} 个账号
                 </span>
                 <div className={s.credPagerRight}>
-                  <select
+                  <Select
                     aria-label="每页显示数量"
                     value={pageSize}
-                    onChange={(e) => choosePageSize(Number(e.target.value))}
+                    onChange={(value) => choosePageSize(Number(value))}
                   >
                     {PAGE_SIZES.map((n) => (
                       <option key={n} value={n}>
                         {n} / 页
                       </option>
                     ))}
-                  </select>
+                  </Select>
                   <button
                     type="button"
                     disabled={safePage <= 1}
@@ -1353,6 +1313,7 @@ export function Credentials() {
               </div>
             </div>
             <div className={s.tabs} role="tablist" aria-label="凭证详情分区">
+              <SegmentThumb />
               {(
                 [
                   ["overview", "概览与请求"],
