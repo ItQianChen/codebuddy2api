@@ -170,16 +170,17 @@ class GrowthManualRunTests(unittest.TestCase):
 
     def test_a_running_job_is_returned_instead_of_starting_another(self):
         started, gate = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)   # Never leave the worker blocked, even when an assertion fails.
 
         def slow(code, ctx):
             started.set()
-            gate.wait(2)
+            gate.wait()   # Held until the test has read the running view, however slow the machine.
             return {"ok": True, "message": code}
         with patch("app.growth_chains.run", side_effect=slow):
             first = self.management.admin_growth_auto("acct-d", "chat_5")
             second = self.management.admin_growth_auto("acct-d", "skill_1")
             # The worker records its current task just before running it.
-            self.assertTrue(started.wait(2))
+            self.assertTrue(started.wait(5))
             running = GROWTH_JOBS.view("growth:acct-d")
             gate.set()
             job = self.finished("acct-d")
