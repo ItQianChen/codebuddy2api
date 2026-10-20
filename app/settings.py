@@ -33,6 +33,22 @@ def normalize_allowed_origins(value):
     return ",".join(normalized)
 
 
+def normalize_update_mirror(value):
+    """A GitHub download proxy prefix such as https://ghfast.top/; empty means direct."""
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        parts.port  # Raises on an invalid port.
+    except ValueError:
+        raise ValueError("update_mirror: 镜像地址无效") from None
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+            or parts.password is not None or parts.query or parts.fragment):
+        raise ValueError("update_mirror: 镜像地址必须是 https 前缀，例如 https://ghfast.top/")
+    return value if value.endswith("/") else value + "/"
+
+
 def normalize_trusted_proxies(value):
     """Normalize a comma/space separated list of trusted proxy IPs or CIDRs."""
     import ipaddress
@@ -135,6 +151,8 @@ SCHEMA = {
     "trusted_proxies": _item("", "string", "可信代理地址（IP/CIDR，逗号分隔）",
                              env="CODEBUDDY2API_TRUSTED_PROXIES", allow_empty=True,
                              max_length=2000, validator=normalize_trusted_proxies),
+    "update_mirror": _item("", "string", "GitHub 下载镜像（前缀，留空直连）", env="CODEBUDDY2API_UPDATE_MIRROR",
+                           allow_empty=True, max_length=200, validator=normalize_update_mirror),
     # Interface preference: WebUI and `--lang` write it, nothing maps it from the environment.
     "language": _item("auto", "string", "界面语言", choices=["auto", "zh", "en"],
                       env_scope="ui", lockable=False),

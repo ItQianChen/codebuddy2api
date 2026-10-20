@@ -71,7 +71,7 @@ class LoginTests(unittest.TestCase):
         pool = converter.CredentialPool(scan=True)
         with patch.object(converter, "_OAUTH", self.manager("www.workbuddy.ai")), \
                 patch("sys.argv", ["converter.py", "login", "--site", "intl", "--no-browser"]), \
-                patch("converter.uvicorn.run") as server, patch("converter.threading.Thread") as thread:
+                patch("converter.run_server") as server, patch("converter.threading.Thread") as thread:
             self.assertEqual(converter.main(), 0)
         server.assert_not_called()
         thread.assert_not_called()
@@ -94,7 +94,7 @@ class LoginTests(unittest.TestCase):
         for site, domain in (("intl", "www.workbuddy.ai"), ("intl-codebuddy", "www.codebuddy.ai")):
             with self.subTest(site=site), patch.object(converter, "_OAUTH", self.manager(domain)), \
                     patch("sys.argv", ["converter.py", "login", "--site", site, "--no-browser"]), \
-                    patch("converter.uvicorn.run") as server, patch("converter.threading.Thread") as thread:
+                    patch("converter.run_server") as server, patch("converter.threading.Thread") as thread:
                 self.polls = 0
                 self.assertEqual(converter.main(), 0)
                 server.assert_not_called()

@@ -40,7 +40,7 @@ class EnvironmentConfigTests(unittest.TestCase):
              patch.object(converter, 'seed_credentials') as seed, patch.object(converter, 'CredentialPool') as pool, \
              patch.object(converter, '_publish_model_cache'), patch.object(runtime_management, 'install'), \
              patch.object(converter.threading, 'Thread'), patch.object(converter, '_log'), \
-             patch.object(converter.uvicorn, 'run') as server, contextlib.redirect_stderr(io.StringIO()):
+             patch.object(converter, 'run_server') as server, contextlib.redirect_stderr(io.StringIO()):
             try:
                 converter.main()
                 snapshot = {item['key']: item for item in resolve_settings(converter.CONFIG)}
