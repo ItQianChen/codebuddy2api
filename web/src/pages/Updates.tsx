@@ -44,6 +44,15 @@ type UpdateState = {
   mirrors: string[];
   mirrorCustom: string;
   mirrorLocked: boolean;
+  build: Build | null;
+};
+// Where the running code came from: a git checkout against its tag, or an image's channel.
+type Build = {
+  commit: string | null;
+  tagCommit: string | null;
+  dirty: boolean;
+  exact: boolean | null;
+  channel: string | null;
 };
 
 // Fast enough for the download bar to move smoothly; the job lives on the server.
@@ -95,7 +104,40 @@ function normalize(value: unknown): UpdateState {
       : [],
     mirrorCustom: typeof d.mirror_custom === "string" ? d.mirror_custom : "",
     mirrorLocked: d.mirror_locked === true,
+    build: d.build && typeof d.build === "object" ? build(object(d.build)) : null,
   };
+}
+
+function build(value: Record<string, unknown>): Build {
+  return {
+    commit: optional(value.commit),
+    tagCommit: optional(value.tag_commit),
+    dirty: value.dirty === true,
+    exact: typeof value.exact === "boolean" ? value.exact : null,
+    channel: optional(value.channel),
+  };
+}
+
+/** Why the running code may not be the release its version names, or null when it is. */
+function useBuildWarning(d: UpdateState | null | undefined): string | null {
+  const t = useT();
+  const b = d?.build;
+  if (!d || !b) return null;
+  const version = `v${d.current}`;
+  const commit = b.commit ?? "—";
+  if (d.deployment === "git" && b.exact === false) {
+    if (!b.tagCommit) return t("updates.drift.noTag", { version, commit });
+    if (b.commit !== b.tagCommit)
+      return t(b.dirty ? "updates.drift.aheadDirty" : "updates.drift.ahead", {
+        version,
+        commit,
+        tagCommit: b.tagCommit,
+      });
+    return t("updates.drift.dirty", { version });
+  }
+  if (d.deployment === "docker" && b.channel === "edge")
+    return t("updates.drift.edge", { version, commit });
+  return null;
 }
 
 function newer(version: string, current: string): boolean {
@@ -115,11 +157,13 @@ function InstallAction({
   release,
   current,
   deployment,
+  warning,
   onStarted,
 }: {
   release: Release;
   current: string;
   deployment: string;
+  warning: string | null;
   onStarted: () => void;
 }) {
   const t = useT();
@@ -145,6 +189,7 @@ function InstallAction({
         {(deployment === "git" || deployment === "docker") && (
           <p>{t(`updates.note.${deployment}`)}</p>
         )}
+        {warning && <p className={s.textWarning}>{warning}</p>}
         <ErrorNotice message={error} />
       </div>
       <span className={s.confirmActions}>
@@ -260,12 +305,14 @@ export function Updates() {
       )
       .finally(() => setChecking(false));
   };
+  const buildWarning = useBuildWarning(d);
   const install = (release: Release) =>
     d && (
       <InstallAction
         release={release}
         current={d.current}
         deployment={d.deployment}
+        warning={buildWarning}
         onStarted={reload}
       />
     );
@@ -273,6 +320,12 @@ export function Updates() {
     <>
       <PageTitle title={t("updates.title")} description={t("updates.desc")} />
       <ResourceState {...resource} />
+      {buildWarning && (
+        <div className={s.warning} role="status">
+          <Icon name="alert" />
+          <span>{buildWarning}</span>
+        </div>
+      )}
       <ErrorNotice message={d?.error ?? null} />
       {d && (
         <>

@@ -51,6 +51,8 @@ MIRRORS = ("https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/
            "https://gh.llkk.cc/", "https://ghproxy.cc/", "https://hub.gitmirror.com/")
 PROBE_BYTES = 512 * 1024
 PROBE_SECONDS = 8
+# Written into images at build time with the channel (edge for main, stable for tags) and commit.
+BUILD_FILE = "build.json"
 # Databases an older release must still open after a rollback, and where it declares their schema.
 SCHEMAS = (("control.sqlite3", "app/control_store.py"), ("logs.sqlite3", "app/audit_store.py"))
 
@@ -101,6 +103,7 @@ class Updater:
         self._attempted_at = 0.0
         self._error = None
         self._job = {"status": "idle"}
+        self._build = None
 
     # ------------------------------------------------------------------ checks
 
@@ -170,8 +173,9 @@ class Updater:
                                          else f"检查更新失败（HTTP {code}）")
             except (httpx.HTTPError, ValueError, UpdateError):
                 releases, error = None, "无法连接 GitHub，请检查网络或代理设置（HTTPS_PROXY）"
+            build = self.build() or {}
             with self._lock:
-                self._error = error
+                self._error, self._build = error, build
                 if releases is not None:
                     self._releases, self._checked_at = releases, now
         return self.view()
@@ -180,6 +184,39 @@ class Updater:
         while True:
             self.check()
             time.sleep(CHECK_INTERVAL)
+
+    def build(self):
+        """Where the running code came from, so the WebUI can warn when it may not be the release
+        its VERSION names: a git checkout away from that tag, or an image built from main (edge).
+        """
+        if self.deployment == "git":
+            git = shutil.which("git")
+
+            def run(*args):
+                try:
+                    result = git and subprocess.run([git, "--no-optional-locks", *args], cwd=self.root,
+                                                    capture_output=True, text=True, timeout=10)
+                except (OSError, subprocess.TimeoutExpired):
+                    return None
+                return result.stdout.strip() if result and result.returncode == 0 else None
+            head = run("rev-parse", "HEAD")
+            if not head:
+                return None
+            tag = run("rev-parse", "--verify", "--quiet", f"refs/tags/v{self.current}^{{commit}}")
+            dirty = bool(run("status", "--porcelain", "--untracked-files=no"))
+            return {"commit": head[:12], "tag_commit": tag[:12] if tag else None, "dirty": dirty,
+                    "exact": head == tag and not dirty}
+        try:
+            info = json.loads((self.root / BUILD_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        # A one-click update replaces the program but not this file, which then describes the image
+        # rather than the running release.
+        if not isinstance(info, dict) or info.get("version") != self.current:
+            return None
+        channel, commit = info.get("channel"), info.get("commit")
+        return {"channel": channel if channel in ("edge", "stable") else None,
+                "commit": commit[:12] if isinstance(commit, str) and commit else None}
 
     def self_update_block(self):
         """Why this process cannot replace itself, or None when it can."""
@@ -191,6 +228,8 @@ class Updater:
 
     def view(self):
         block = self.self_update_block()
+        if self._build is None:
+            self._build = self.build() or {}
         with self._lock:
             latest = self._releases[0] if self._releases else None
             return {"current": self.current, "repository": REPOSITORY_URL, "deployment": self.deployment,
@@ -201,7 +240,8 @@ class Updater:
                     "releases": [dict(release) for release in self._releases], "job": dict(self._job),
                     "mirror": self.mirror, "mirrors": list(MIRRORS), "mirror_custom": self.custom_mirror,
                     "mirror_locked": self.config.get("settings_sources", {}).get("update_mirror")
-                    in ("cli", "environment", "dotenv")}
+                    in ("cli", "environment", "dotenv"),
+                    "build": self._build or None}
 
     # ----------------------------------------------------------------- install
 

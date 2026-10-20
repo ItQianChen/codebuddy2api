@@ -140,6 +140,41 @@ describe("updates page", () => {
     expect(await screen.findByText("网络中断")).toBeTruthy();
   });
 
+  it("warns when the running code may not be the release its version names", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue({
+      data: payload({
+        deployment: "git",
+        build: { commit: "05a7d74dbf6c", tag_commit: "aca8db58d53a", dirty: true, exact: false },
+      }),
+    });
+    const { unmount } = mount();
+    const warning = await screen.findByText(
+      /当前提交 05a7d74dbf6c 不是 v1\.4\.0 标签的提交 aca8db58d53a，且有未提交的修改/,
+    );
+    expect(warning.closest("[role=status]")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /更新到 v1\.5\.0/ }));
+    expect(screen.getAllByText(/运行的代码可能不是 v1\.4\.0/)).toHaveLength(2);
+    unmount();
+
+    get.mockResolvedValue({
+      data: payload({ deployment: "docker", build: { channel: "edge", commit: "0123456789ab" } }),
+    });
+    const edge = mount();
+    expect(await screen.findByText(/当前是 edge 镜像（main 分支提交 0123456789ab）/)).toBeTruthy();
+    edge.unmount();
+
+    for (const build of [
+      { commit: "aca8db58d53a", tag_commit: "aca8db58d53a", dirty: false, exact: true },
+      { channel: "stable", commit: "aca8db58d53a" },
+    ]) {
+      get.mockResolvedValue({ data: payload({ deployment: "git", build }) });
+      const clean = mount();
+      expect(await screen.findByText("Highlights")).toBeTruthy();
+      expect(screen.queryByText(/可能不是|edge 镜像/)).toBeNull();
+      clean.unmount();
+    }
+  });
+
   it("confirms before installing and polls the running job", async () => {
     const get = vi.spyOn(api, "get").mockResolvedValue({ data: payload() });
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: {} });
