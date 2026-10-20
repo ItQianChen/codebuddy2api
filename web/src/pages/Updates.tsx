@@ -16,6 +16,7 @@ import {
 import { Markdown } from "../markdown";
 import { MirrorCard, MirrorDrawer } from "../MirrorDrawer";
 import { UpdateProgress, type UpdateJob } from "../UpdateProgress";
+import { notify } from "../toast";
 import s from "../ui.module.scss";
 
 type Release = {
@@ -205,7 +206,6 @@ export function Updates() {
   const resource = useResource("/update", normalize);
   const { reload } = resource;
   const [checking, setChecking] = useState(false);
-  const [checkError, setCheckError] = useState<string | null>(null);
   const [mirrorOpen, setMirrorOpen] = useState(false);
   const d = resource.data;
   const running = d?.job.status === "running";
@@ -219,13 +219,45 @@ export function Updates() {
   const selected = d && (tag ? d.releases.find((item) => item.tag === tag) : latest);
   const canInstall = (release: Release | undefined): release is Release =>
     Boolean(d?.selfUpdate && !busy && release?.installable && release.version !== d.current);
+  // Every check ends in a toast, so an unchanged page never reads as no response.
   const check = () => {
     setChecking(true);
-    setCheckError(null);
     void api
-      .post("/update/check")
-      .then(reload)
-      .catch((err: unknown) => setCheckError(errorMessage(err)))
+      .post<unknown>("/update/check")
+      .then((response) => {
+        const result = normalize(response.data);
+        notify(
+          result.error
+            ? {
+                key: "update-check",
+                tone: "bad",
+                title: t("updates.checkFailed"),
+                body: <span>{result.error}</span>,
+              }
+            : result.updateAvailable && result.latest
+              ? {
+                  key: "update-check",
+                  tone: "good",
+                  title: t("updates.found", { version: `v${result.latest}` }),
+                  body: <span>{t("updates.foundBody")}</span>,
+                }
+              : {
+                  key: "update-check",
+                  tone: "good",
+                  title: t("updates.upToDate"),
+                  body: <span>{t("updates.upToDateBody", { version: `v${result.current}` })}</span>,
+                },
+        );
+        reload();
+      })
+      .catch((err: unknown) =>
+        notify({
+          key: "update-check",
+          tone: "bad",
+          title: t("updates.checkFailed"),
+          body: <span>{errorMessage(err)}</span>,
+        }),
+      )
       .finally(() => setChecking(false));
   };
   const install = (release: Release) =>
@@ -241,7 +273,7 @@ export function Updates() {
     <>
       <PageTitle title={t("updates.title")} description={t("updates.desc")} />
       <ResourceState {...resource} />
-      <ErrorNotice message={checkError ?? d?.error ?? null} />
+      <ErrorNotice message={d?.error ?? null} />
       {d && (
         <>
           <div className={s.kpiGrid}>

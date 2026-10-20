@@ -261,4 +261,43 @@ describe("manual rates and probes", () => {
     expect(post).toHaveBeenCalledWith("/models/rate-probe", {});
     expect(await screen.findByText(/实测计费 1 · 确认免费 1 · 失败 0/)).toBeTruthy();
   });
+  it("toasts a scan this page watched finish, but not one that ended before it opened", async () => {
+    const scan = (status: string) => ({
+      status,
+      total: 2,
+      completed: status === "running" ? 1 : 2,
+      success: status === "running" ? 1 : 2,
+      failed: 0,
+      differences: 0,
+      started_at: null,
+      finished_at: null,
+      error: null,
+      profiles: {},
+      accounts: [],
+    });
+    page([measured], { "/models/scan": scan("completed") });
+    const { unmount } = render(<Models />);
+    expect(await screen.findByRole("button", { name: "扫描全部账号模型" })).toBeTruthy();
+    expect(screen.queryByText("全量扫描已完成")).toBeNull();
+    unmount();
+
+    vi.useFakeTimers();
+    try {
+      const extra: Record<string, unknown> = { "/models/scan": scan("running") };
+      page([measured], extra);
+      render(<Models />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText("扫描全部账号模型")).toBeTruthy();
+      extra["/models/scan"] = scan("completed");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(screen.getByText("全量扫描已完成")).toBeTruthy();
+      expect(screen.getByText("成功 2 · 失败 0 · 目录差异 0")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

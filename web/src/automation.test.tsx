@@ -353,3 +353,24 @@ it("does not invent a duration or a claimed credit amount", () => {
   rerender(<TravelSummary trip={{ state: "traveling", remaining_seconds: 0 }} />);
   expect(screen.getByText(/预计已到达，请查询核验/)).toBeTruthy();
 });
+
+it("reports a batch run as a toast that lists only the unfinished accounts", async () => {
+  fixture();
+  const post = vi.spyOn(api, "post").mockResolvedValue({
+    data: {
+      results: [
+        { id: "cn", name: "cn.info", ok: true, message: "余额、目录和用量已同步" },
+        { id: "intl", name: "intl.info", ok: false, message: "操作失败（RuntimeError）" },
+      ],
+    },
+  });
+  render(<Credentials />);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "同步全部余额" })));
+  expect(post).toHaveBeenLastCalledWith("/sync", undefined, expect.anything());
+  expect(screen.getByText("已完成 1 · 未完成 1")).toBeTruthy();
+  expect(screen.getByText("操作失败（RuntimeError）")).toBeTruthy();
+  expect(screen.queryByText("余额、目录和用量已同步")).toBeNull();
+  // Refreshing the list clears the report along with the stale rows.
+  fireEvent.click(screen.getByRole("button", { name: "刷新列表" }));
+  expect(screen.queryByText("已完成 1 · 未完成 1")).toBeNull();
+});

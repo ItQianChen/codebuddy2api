@@ -68,7 +68,7 @@ test("per-account automation persists with scoped actions, dark mode and mobile 
   await page.getByRole("button", { name: "任务配置 cn.info" }).click();
   await expect(page.getByRole("switch", { name: "自动签到 cn.info" })).toBeChecked();
   await expect(page.getByRole("switch", { name: "自动旅行 cn.info" })).toBeChecked();
-  await page.getByRole("button", { name: "关闭" }).click();
+  await page.getByRole("button", { name: "关闭抽屉" }).click();
   await page.getByRole("button", { name: "任务配置 intl.info" }).click();
   await expect(page.getByRole("switch", { name: "自动签到 intl.info" })).not.toBeChecked();
   await expect(page.getByRole("switch", { name: "自动旅行 intl.info" })).toBeDisabled();
@@ -78,11 +78,11 @@ test("per-account automation persists with scoped actions, dark mode and mobile 
   await page.reload();
   await page.getByRole("button", { name: "任务配置 intl.info" }).click();
   await expect(page.getByRole("switch", { name: "自动签到 intl.info" })).toBeChecked();
-  await page.getByRole("button", { name: "关闭" }).click();
+  await page.getByRole("button", { name: "关闭抽屉" }).click();
   await page.getByRole("button", { name: "任务配置 cn.info" }).click();
   await page.getByRole("switch", { name: "自动旅行 cn.info" }).click();
   await expect(page.getByText(/自动旅行已关闭/)).toBeVisible();
-  await page.getByRole("button", { name: "关闭" }).click();
+  await page.getByRole("button", { name: "关闭抽屉" }).click();
   await page.getByRole("button", { name: "更多 cn.info" }).click();
   await page.getByRole("button", { name: "旅行状态 cn.info" }).click();
   await expect(page.getByText("部分完成")).toBeVisible();

@@ -280,12 +280,12 @@ export function describeProbe(item: RecordValue, step: string | null): string {
   return `探测 ${model}（${profile}）${step ? ` · ${step}` : ""}`;
 }
 
-export function useRateProbeJob(onFinished: () => void) {
+export function useRateProbeJob(onFinished: (job: Job) => void) {
   const load = useCallback(
     async () => [jobResponse((await api.get("/models/rate-probe")).data)],
     [],
   );
-  const { jobs, accept } = useJobPolling(load, () => onFinished());
+  const { jobs, accept } = useJobPolling(load, onFinished);
   const [error, setError] = useState<string | null>(null);
   const job = jobs.find((row) => row.status !== "idle") ?? null;
   const start = (modelId?: string) => {
@@ -295,7 +295,12 @@ export function useRateProbeJob(onFinished: () => void) {
         modelId ? `/models/${encodeURIComponent(modelId)}/rate-probe` : "/models/rate-probe",
         {},
       )
-      .then((response) => accept([jobResponse(response.data)]))
+      .then((response) => {
+        const started = jobResponse(response.data);
+        accept([started]);
+        // A job with nothing to probe can finish before the start request returns.
+        if (started.status !== "running") onFinished(started);
+      })
       .catch((err: unknown) => setError(errorMessage(err)));
   };
   return { job, error, start };

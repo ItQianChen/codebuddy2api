@@ -75,6 +75,7 @@ The page shows downloaded bytes, the current step and overall progress live; aft
 - **Git checkouts:** tracked files follow the release and uncommitted edits go into the backup; untracked and ignored files inside replaced directories (such as `web/node_modules` or `docs/plans`) move into the new tree. HEAD does not move, so `git status` then shows the difference from the current commit.
 - **Containers:** program files are written to the container's writable layer. Directories the image layer cannot rename are copied out and removed instead; later updates rename atomically again.
 - **Download source:** the overview card shows the source in use and opens a drawer listing GitHub direct, the built-in mirrors (ghfast.top, gh-proxy.com, ghproxy.net and others) and one custom slot. Test every source at once or one at a time (each test downloads the first 512 KiB of the newest archive; a source returning anything but the archive counts as unavailable and cannot be chosen). A prefix typed into the custom slot is remembered once used, even after switching to another source. Mirrors only serve downloads: releases are still listed from the GitHub API, a mirrored archive must match the API digest, and a release without a digest cannot install through a mirror. `CODEBUDDY2API_UPDATE_MIRROR` sets and locks the source.
+- **Check for updates** always answers with a notice: a new version, up to date, or why the check failed.
 - Rolling back to a version without one-click updates means upgrading manually afterwards.
 
 API: `GET /admin/update`, `POST /admin/update/check`, `POST /admin/update/install` (`{"tag": "v<version>"}`), `POST /admin/update/mirror` (`{"mirror": "<prefix or empty>", "custom": "<optional custom slot>"}`), `POST /admin/update/mirrors/test` (optional `{"mirror": "<prefix or empty>"}` tests one source).
@@ -82,6 +83,8 @@ API: `GET /admin/update`, `POST /admin/update/check`, `POST /admin/update/instal
 ## Interface behavior
 
 The sidebar remembers its icon-only mode. Drawers lock background scrolling, close on backdrop clicks or Esc, and restore focus; saves, imports and deletions prevent accidental dismissal while pending. Details use labeled fields and status groups with folded raw diagnostics. Glass surfaces fall back to solid colors when transparency is reduced or blur is unsupported.
+
+Action results appear as notices floating over the top of the page, or over an open drawer. Successes fade after a few seconds and results with unfinished accounts stay longer; hovering holds a notice, a click dismisses it, and refreshing the list or reloading the page clears them all. A finished job raises its notice only on the page that watched it run, so a reload does not repeat it. Progress banners for running jobs stay inline above the content.
 
 The appearance icon offers light, dark and system-following modes. Four palettes affect light mode only; dark mode stays fixed and the light preference is retained. Language is stored in the configuration store, so the CLI and every browser share it; other preferences stay browser-local. Drawers fade/slide in and out, retaining the scroll lock through exit; reduced-motion settings skip animation.
 
