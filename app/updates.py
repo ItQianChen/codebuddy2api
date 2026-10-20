@@ -2,7 +2,7 @@
 
 Releases are listed from the GitHub API. Installing one, newer or older, downloads its
 archive (optionally through a download mirror), verifies it against the published
-checksums and the digest the API reports, backs up everything it is about to replace,
+checksums and the digest the API reports, backs up the control database,
 swaps the release entries in with same-volume renames (rolled back on failure) and
 restarts the process in place with its original command line. Release archives, git
 checkouts and containers take the same path; git checkouts keep their untracked and
@@ -11,7 +11,6 @@ ignored files, and container image layers fall back to copying what they cannot 
 from __future__ import annotations
 
 import ast
-import calendar
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import errno
@@ -25,12 +24,12 @@ import sqlite3
 import subprocess
 import sys
 import tarfile
-import tempfile
 import threading
 import time
 
 import httpx
 
+from .backups import BackupError, Backups
 from .startup import request_restart
 
 REPOSITORY = "maiphucgiang/codebuddy2api"
@@ -45,8 +44,6 @@ MAX_UNPACKED_BYTES = 256 * 1024 * 1024
 MAX_MEMBERS = 20000
 MAX_NOTES = 64 * 1024
 TAG = re.compile(r"v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))")
-BACKUP = re.compile(r"update-(\d+\.\d+\.\d+)-to-(\d+\.\d+\.\d+)-(\d{8}-\d{6})\.tar\.gz")
-SKIPPED_PARTS = {"__pycache__", "node_modules"}
 # Public prefix proxies for github.com downloads. None of them proxies api.github.com, so
 # releases are always listed directly, and mirrored bytes are only trusted once they match
 # the digest the GitHub API reports.
@@ -89,11 +86,12 @@ def detect_deployment(root):
 
 
 class Updater:
-    def __init__(self, config, *, root, data_dir, version, deployment=None, transport=None):
+    def __init__(self, config, *, root, data_dir, version, deployment=None, transport=None, backups=None):
         self.config = config
         self.root = Path(root).resolve()
         self.data_dir = Path(data_dir).resolve()
         self.current = version
+        self.backups = backups or Backups(config, data_dir=self.data_dir, version=version)
         self.deployment = deployment or detect_deployment(self.root)
         self._transport = transport
         self._lock = threading.Lock()
@@ -265,7 +263,7 @@ class Updater:
                 self._guard_schema(staged)
             local = self._local_paths(names)
             self._step("backup")
-            backup = self._backup(names, release["version"], work)
+            backup = self.backups.create("update", release["version"])
             self._step("dependencies", backup=backup)
             self._install_dependencies(staged)
             self._step("replace")
@@ -280,14 +278,15 @@ class Updater:
             self._step("restart", status="restarting")
             request_restart(self.config)
         except Exception as error:
-            message = str(error) if isinstance(error, UpdateError) else f"更新失败：{type(error).__name__}"
+            message = str(error) if isinstance(error, (UpdateError, BackupError)) else f"更新失败：{type(error).__name__}"
+            # Clean up before reporting the failure, so nothing sees a failed job with work left behind.
+            if not keep_work:
+                shutil.rmtree(work, ignore_errors=True)
             with self._lock:
                 step = self._job.get("step")
                 self._job.update(status="failed", message=message)
             if audit := self._audit():
                 audit.event("admin", "update.failed", {"to": release["version"], "code": step})
-            if not keep_work:
-                shutil.rmtree(work, ignore_errors=True)
 
     def _download(self, url, target):
         digest = hashlib.sha256()
@@ -368,7 +367,7 @@ class Updater:
             for path in paths:
                 source, target = previous / path, self.root / path
                 if os.path.lexists(target) or not os.path.lexists(source):
-                    continue   # The release ships this path now; the old copy stays in the backup.
+                    continue   # The release ships this path now and its copy wins.
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(source, target)
         except OSError:
@@ -379,45 +378,6 @@ class Updater:
             entry = (self.root / name).resolve()
             if self.data_dir == entry or entry in self.data_dir.parents:
                 raise UpdateError("数据目录位于将被替换的程序目录中，无法自动更新")
-
-    def backup_dir(self):
-        return self.data_dir / "backups"
-
-    def _backup(self, names, target, work):
-        """Archive the entries about to be replaced plus a consistent control database snapshot."""
-        directory = self.backup_dir()
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        name = f"update-{self.current}-to-{target}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}.tar.gz"
-        partial = directory / f"{name}.tmp"
-
-        def skip_caches(info):
-            return None if SKIPPED_PARTS & set(PurePosixPath(info.name).parts) else info
-
-        with tempfile.TemporaryDirectory(dir=work) as scratch:
-            snapshot = Path(scratch) / "control.sqlite3"
-            control = self.data_dir / "control.sqlite3"
-            if control.exists():
-                source, copy = sqlite3.connect(control, timeout=5), sqlite3.connect(snapshot)
-                try:
-                    source.backup(copy)   # Online backup: consistent while the gateway keeps writing.
-                finally:
-                    copy.close()
-                    source.close()
-            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tar:
-                    for entry in names:
-                        if os.path.lexists(self.root / entry):
-                            tar.add(self.root / entry, arcname=f"code/{entry}", filter=skip_caches)
-                    if snapshot.exists():
-                        tar.add(snapshot, arcname="data/control.sqlite3")
-                    for credential in sorted(self.data_dir.glob("*.info")):
-                        tar.add(credential, arcname=f"data/{credential.name}")
-                os.replace(partial, directory / name)
-            except BaseException:
-                partial.unlink(missing_ok=True)
-                raise
-        return name
 
     def _install_dependencies(self, staged):
         incoming, current = staged / "requirements.txt", self.root / "requirements.txt"
@@ -521,29 +481,3 @@ class Updater:
             return result
         result.update(ok=True, speed=round(received / max(time.monotonic() - started, 0.001) / 1024, 1))
         return result
-
-    # ----------------------------------------------------------------- backups
-
-    def backups(self):
-        try:
-            entries = list(self.backup_dir().iterdir())
-        except OSError:
-            return []
-        items = []
-        for entry in entries:
-            match = BACKUP.fullmatch(entry.name)
-            if not match or not entry.is_file():
-                continue
-            created = calendar.timegm(time.strptime(match.group(3), "%Y%m%d-%H%M%S"))
-            items.append({"name": entry.name, "from": match.group(1), "to": match.group(2),
-                          "created_at": created, "size": entry.stat().st_size})
-        return sorted(items, key=lambda item: item["created_at"], reverse=True)
-
-    def backup_path(self, name):
-        path = self.backup_dir() / name
-        if not BACKUP.fullmatch(name) or not path.is_file():
-            raise UpdateError("备份不存在")
-        return path
-
-    def delete_backup(self, name):
-        self.backup_path(name).unlink()

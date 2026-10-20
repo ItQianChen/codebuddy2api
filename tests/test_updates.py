@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow direct exe
 import errno
 import hashlib
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -27,6 +28,7 @@ import httpx
 
 from app import startup, updates
 from app.admin_api import install_admin
+from app.backups import BackupError, Backups
 from app.control_store import ControlStore
 from app.gateway_management import install_pages
 from app.settings import normalize_update_mirror
@@ -214,22 +216,26 @@ class InstallTests(UpdaterFixture):
         self.assertTrue(self.config["server"].should_exit)
         self.assertEqual(self.config["server"].config.timeout_graceful_shutdown, 30)
 
-        [backup] = updater.backups()
-        self.assertEqual((backup["from"], backup["to"], backup["name"]), ("1.0.0", "1.1.0", job["backup"]))
-        with tarfile.open(updater.backup_path(backup["name"])) as tar:
-            names = set(tar.getnames())
-            self.assertEqual(tar.extractfile("code/converter.py").read(), b"# gateway 1.0.0\n")
+        [backup] = updater.backups.list()
+        self.assertEqual((backup["kind"], backup["from"], backup["to"], backup["name"]),
+                         ("update", "1.0.0", "1.1.0", job["backup"]))
+        with tarfile.open(updater.backups.path(backup["name"])) as tar:
+            # Only the configuration and a record of when and between which versions: no
+            # credentials, no program files.
+            self.assertEqual(sorted(tar.getnames()), ["data/control.sqlite3", "manifest.json"])
             snapshot = tar.extractfile("data/control.sqlite3").read()
-        self.assertIn("code/app/old_module.py", names)
-        self.assertIn("data/account.info", names)
-        self.assertFalse(any("__pycache__" in name for name in names))
-        self.assertFalse(any(name.startswith("code/auth") or name.endswith(".env") for name in names))
+            manifest = json.loads(tar.extractfile("manifest.json").read())
+        self.assertEqual((manifest["kind"], manifest["version"], manifest["target_version"]),
+                         ("update", "1.0.0", "1.1.0"))
+        self.assertEqual(manifest["files"], ["data/control.sqlite3"])
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.strptime(manifest["created_at"], "%Y-%m-%dT%H:%M:%SZ"))
+        self.assertTrue(backup["name"].endswith(f"-{stamp}.tar.gz"))
         restored = self.root / "restored.sqlite3"
         restored.write_bytes(snapshot)
         with sqlite3.connect(restored) as db:
             self.assertEqual(db.execute("SELECT value FROM marker").fetchone(), ("before-update",))
         if os.name != "nt":
-            self.assertEqual(updater.backup_path(backup["name"]).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(updater.backups.path(backup["name"]).stat().st_mode & 0o777, 0o600)
         self.audit.event.assert_called_with("admin", "update.installed",
                                             {"from": "1.0.0", "to": "1.1.0", "file": backup["name"]})
 
@@ -248,7 +254,7 @@ class InstallTests(UpdaterFixture):
         job = self.wait(updater)
         self.assertEqual(job["status"], "failed")
         self.assertIn("校验失败", job["message"])
-        self.assertEqual(updater.backups(), [])
+        self.assertEqual(updater.backups.list(), [])
         self.assert_untouched()
         self.audit.event.assert_called_with("admin", "update.failed", {"to": "1.1.0", "code": "verify"})
 
@@ -294,7 +300,7 @@ class InstallTests(UpdaterFixture):
         updater.install("v0.9.0")
         self.assertEqual(self.wait(updater)["status"], "restarting")
         self.assertEqual((self.root / "VERSION").read_text(), "0.9.0\n")
-        self.assertEqual([item["to"] for item in updater.backups()], ["0.9.0"])
+        self.assertEqual([item["to"] for item in updater.backups.list()], ["0.9.0"])
 
     def test_rollback_stops_when_the_older_schema_cannot_read_the_data(self):
         with sqlite3.connect(self.data / "control.sqlite3") as db:
@@ -306,7 +312,7 @@ class InstallTests(UpdaterFixture):
         job = self.wait(updater)
         self.assertEqual(job["status"], "failed")
         self.assertIn("control.sqlite3（结构版本 2）", job["message"])
-        self.assertEqual(updater.backups(), [])
+        self.assertEqual(updater.backups.list(), [])
         self.assert_untouched()
 
     def test_mirror_downloads_are_prefixed_and_still_bound_to_the_api_digest(self):
@@ -388,7 +394,7 @@ class InstallTests(UpdaterFixture):
         self.assertEqual(job["status"], "failed")
         self.assertIn("no matching wheel", job["message"])
         self.assert_untouched()
-        self.assertEqual(len(updater.backups()), 1)   # The backup was taken before dependencies.
+        self.assertEqual(len(updater.backups.list()), 1)   # The backup was taken before dependencies.
 
     def test_swap_failure_rolls_every_entry_back(self):
         updater = self.updater()
@@ -454,22 +460,66 @@ class MirrorTests(UpdaterFixture):
 
 
 class BackupTests(UpdaterFixture):
+    def backups(self, **settings):
+        self.config.update(settings)
+        return Backups(self.config, data_dir=self.data, version="1.0.0")
+
     def test_backups_are_listed_and_deleted_by_strict_name_only(self):
-        updater = self.updater()
-        directory = updater.backup_dir()
-        directory.mkdir()
-        name = "update-1.0.0-to-1.1.0-20261020-120000.tar.gz"
-        (directory / name).write_bytes(b"x" * 10)
-        (directory / "update-1.0.0-to-1.1.0-20261019-120000.tar.gz.tmp").write_bytes(b"partial")
-        (directory / "notes.txt").write_text("ignored")
-        [item] = updater.backups()
-        self.assertEqual(item, {"name": name, "from": "1.0.0", "to": "1.1.0", "size": 10,
-                                "created_at": 1792497600})
+        backups = self.backups()
+        backups.directory.mkdir()
+        update = "update-1.0.0-to-1.1.0-20261020-120000.tar.gz"
+        manual = "manual-1.1.0-20261021-080000.tar.gz"
+        (backups.directory / update).write_bytes(b"x" * 10)
+        (backups.directory / manual).write_bytes(b"y" * 4)
+        (backups.directory / "update-1.0.0-to-1.1.0-20261019-120000.tar.gz.tmp").write_bytes(b"partial")
+        (backups.directory / "notes.txt").write_text("ignored")
+        self.assertEqual(backups.list(), [
+            {"name": manual, "kind": "manual", "version": "1.1.0", "size": 4, "created_at": 1792569600},
+            {"name": update, "kind": "update", "version": "1.0.0", "from": "1.0.0", "to": "1.1.0",
+             "size": 10, "created_at": 1792497600},
+        ])
         for bad in ("../control.sqlite3", "notes.txt", "update-1.0.0-to-1.1.0-20261019-120000.tar.gz.tmp"):
-            with self.assertRaises(UpdateError):
-                updater.delete_backup(bad)
-        updater.delete_backup(name)
-        self.assertEqual(updater.backups(), [])
+            with self.assertRaises(BackupError):
+                backups.delete(bad)
+        backups.delete(update)
+        backups.delete(manual)
+        self.assertEqual(backups.list(), [])
+
+    def test_a_manual_backup_holds_the_configuration_and_its_record_only(self):
+        backups = self.backups()
+        name = backups.create("manual")
+        self.assertRegex(name, r"^manual-1\.0\.0-\d{8}-\d{6}\.tar\.gz$")
+        with tarfile.open(backups.path(name)) as tar:
+            self.assertEqual(sorted(tar.getnames()), ["data/control.sqlite3", "manifest.json"])
+            manifest = json.loads(tar.extractfile("manifest.json").read())
+        self.assertEqual((manifest["kind"], manifest["version"]), ("manual", "1.0.0"))
+        self.assertNotIn("target_version", manifest)
+        # A second backup within the same second would take the same name.
+        with patch("app.backups.time.time", return_value=float(backups.list()[0]["created_at"])), \
+                self.assertRaises(BackupError):
+            backups.create("manual")
+        self.assertFalse(any(entry.name.startswith(".tmp-") for entry in backups.directory.iterdir()))
+
+    def test_scheduled_backups_run_when_due_and_prune_only_their_own(self):
+        backups = self.backups(backup_auto=False, backup_interval_hours=24, backup_keep=2)
+        self.assertIsNone(backups.run_due())
+        self.assertIsNone(backups.schedule()["next_at"])
+        backups.directory.mkdir()
+        now = time.time()
+        for hours in (100, 75, 50):
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now - hours * 3600))
+            (backups.directory / f"auto-1.0.0-{stamp}.tar.gz").write_bytes(b"auto")
+        (backups.directory / "manual-1.0.0-20200101-000000.tar.gz").write_bytes(b"manual")
+        self.config["backup_auto"] = True
+        created = backups.run_due()   # The newest scheduled backup is 50 hours old.
+        kinds = [item["kind"] for item in backups.list()]
+        self.assertEqual((kinds.count("auto"), kinds.count("manual")), (2, 1))
+        self.assertEqual(backups.list()[0]["name"], created)
+        schedule = backups.schedule()
+        self.assertEqual((schedule["enabled"], schedule["keep"], schedule["last_at"]),
+                         (True, 2, backups.list()[0]["created_at"]))
+        self.assertAlmostEqual(schedule["next_at"], schedule["last_at"] + 24 * 3600, delta=1)
+        self.assertIsNone(backups.run_due())   # Not due again for a day.
 
 
 class RestartTests(unittest.TestCase):
@@ -518,6 +568,7 @@ class AdminRouteTests(UpdaterFixture):
         self.config.update(api_key="synthetic-key", control_store=store,
                            session_path=self.root / "admin-sessions.json")
         self.config["updater"] = self.updater()
+        self.config["backups"] = self.config["updater"].backups
         app = FastAPI()
         install_admin(app, self.config, SimpleNamespace())
         self.client = self.enterContext(TestClient(app))
@@ -538,8 +589,8 @@ class AdminRouteTests(UpdaterFixture):
         self.assertEqual(self.wait(self.config["updater"])["status"], "restarting")
         self.audit.event.assert_any_call("admin", "update.started", {"to": "v1.1.0"})
 
-    def test_storage_lists_downloads_and_deletes_backups(self):
-        directory = self.config["updater"].backup_dir()
+    def test_storage_creates_lists_downloads_and_deletes_backups(self):
+        directory = self.config["backups"].directory
         directory.mkdir()
         name = "update-1.0.0-to-1.1.0-20261020-120000.tar.gz"
         (directory / name).write_bytes(b"backup-bytes")
@@ -554,6 +605,12 @@ class AdminRouteTests(UpdaterFixture):
         self.assertEqual(deleted.json(), {"deleted": name})
         self.assertEqual(self.client.delete(f"/admin/storage/backups/{name}", headers=self.headers).status_code, 404)
         self.audit.event.assert_any_call("admin", "storage.backup_deleted", {"file": name})
+        created = self.client.post("/admin/storage/backups", headers=self.headers).json()["created"]
+        self.assertTrue(created.startswith("manual-1.0.0-"))
+        storage = self.client.get("/admin/storage", headers=self.headers).json()
+        self.assertEqual([item["kind"] for item in storage["backups"]], ["manual"])
+        self.assertEqual(storage["backup_schedule"]["enabled"], False)
+        self.audit.event.assert_any_call("admin", "storage.backup_created", {"file": created})
 
     def test_mirror_route_saves_validates_and_respects_locks(self):
         saved = self.client.post("/admin/update/mirror", json={"mirror": "https://ghfast.top"}, headers=self.headers)

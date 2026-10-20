@@ -114,7 +114,7 @@ A successful run writes the values and disables the Dashboard notice in one revi
 
 ### Upgrade and state migration
 
-Release-archive installs and git checkouts can update or roll back in one click on the WebUI **Updates** page: it verifies the archive, backs up the replaced program files and control database, swaps them in place and restarts with the original arguments; see [Updates](webui.md#updates). For a manual upgrade, stop the gateway and back up the entire data directory first. Startup imports legacy JSON sessions, cooldowns, credit/trial history, catalogs and usage into `control.sqlite3` once. Old files remain as backups and are no longer read or updated. Invalid critical state or a failed migration stops startup; repair it or restore a backup rather than deleting ledgers to bypass validation.
+Release-archive installs and git checkouts can update or roll back in one click on the WebUI **Updates** page: it verifies the archive, backs up the control database, swaps the program files in place and restarts with the original arguments; see [Updates](webui.md#updates). For a manual upgrade, stop the gateway and back up the entire data directory first. Startup imports legacy JSON sessions, cooldowns, credit/trial history, catalogs and usage into `control.sqlite3` once. Old files remain as backups and are no longer read or updated. Invalid critical state or a failed migration stops startup; repair it or restore a backup rather than deleting ledgers to bypass validation.
 
 SQLite state read/validation failures stop startup without deleting sessions or replacing state with empty defaults. Repair the control database before retrying; only rebuildable cache write failures may retain the current in-memory data with a warning.
 

@@ -295,6 +295,7 @@ const eventActions: Record<string, MessageKey> = {
   "credentials.uploaded": "logs.action.credentials_uploaded",
   "credentials.exported": "logs.action.credentials_exported",
   storage_archive: "logs.action.storage_archive",
+  "storage.backup_created": "logs.action.storage_backup_created",
   "storage.backup_deleted": "logs.action.storage_backup_deleted",
   "update.started": "logs.action.update_started",
   "update.installed": "logs.action.update_installed",

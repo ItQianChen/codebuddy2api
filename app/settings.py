@@ -156,6 +156,11 @@ SCHEMA = {
     # The WebUI's own slot for one custom mirror, remembered even while another source is in use.
     "update_mirror_custom": _item("", "string", "自定义 GitHub 下载镜像", allow_empty=True, max_length=200,
                                   validator=normalize_update_mirror, hidden=True, env_scope="none"),
+    # Scheduled configuration backups (app/backups.py); only scheduled ones are pruned to the limit.
+    "backup_auto": _item(False, "boolean", "自动备份配置", env="CODEBUDDY2API_BACKUP_AUTO"),
+    "backup_interval_hours": _item(24, "integer", "自动备份间隔（小时）", env="CODEBUDDY2API_BACKUP_INTERVAL_HOURS",
+                                   minimum=1, maximum=720),
+    "backup_keep": _item(7, "integer", "自动备份保留份数", env="CODEBUDDY2API_BACKUP_KEEP", minimum=1, maximum=100),
     # Interface preference: WebUI and `--lang` write it, nothing maps it from the environment.
     "language": _item("auto", "string", "界面语言", choices=["auto", "zh", "en"],
                       env_scope="ui", lockable=False),

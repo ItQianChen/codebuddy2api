@@ -72,6 +72,7 @@ def main():
         gateway.CONFIG["management"] = Management(gateway)
         gateway.CONFIG["updater"] = Updater(gateway.CONFIG, root=Path(gateway.__file__).resolve().parent,
                                             data_dir=root, version=gateway.APP_VERSION)
+        gateway.CONFIG["backups"] = gateway.CONFIG["updater"].backups
         gateway.open_backend_stream = fake_backend
         gateway.trial_rewards.claim_trial = fake_trial
         socket.socket.connect = forbid_connect

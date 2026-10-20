@@ -5450,6 +5450,8 @@ def main():
                          daemon=True, name="cred-housekeeper").start()
     if (updater := CONFIG.get("updater")) is not None:
         threading.Thread(target=updater.check_loop, daemon=True, name="update-check").start()
+    if (backups := CONFIG.get("backups")) is not None:
+        threading.Thread(target=backups.loop, daemon=True, name="config-backup").start()
 
     if not args.skip_check:
         preflight()

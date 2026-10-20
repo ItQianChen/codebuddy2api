@@ -1350,6 +1350,36 @@ $white: var(--page);
   gap: 10px;
   flex-shrink: 0;
 }
+.panelActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+.panelHeading:has(.panelActions) {
+  flex-wrap: wrap;
+}
+.backupInfo {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.backupInfo .badge {
+  font-family: inherit;
+}
+.autoBackupForm {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.autoBackupForm .field {
+  align-self: stretch;
+  margin: 0;
+}
 .backupActions {
   display: flex;
   align-items: center;
