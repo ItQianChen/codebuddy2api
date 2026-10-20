@@ -9,6 +9,8 @@ Use your **WorkBuddy / CodeBuddy (Tencent)** subscription as local **OpenAI- and
 - Automatic multi-account routing across domestic and international sites, with credential refresh.
 - Per-account automation: domestic personal accounts check in and dispatch Buddy travel by default, with independent switches; international check-in is opt-in. The growth center is personal-only: finished tasks are claimed automatically, with per-task switches for behavior chains; enterprise accounts are excluded.
 
+**Live preview:** [codebuddy2api.elaina-love.com](https://codebuddy2api.elaina-love.com/dashboard), key `preview`. It runs the WebUI and APIs against a simulated upstream with synthetic accounts, holds no real credentials and resets every 6 hours; credential import and export, settings changes and log clearing are disabled there. See [Development preview](docs/development.md) to run it locally.
+
 ## Quick start
 
 Requires Git and Docker Compose. The prebuilt GHCR image includes the WebUI; no local build is needed.
@@ -60,6 +62,7 @@ The template binds to localhost only. Configure HTTPS and restrict network acces
 ├── app/                 # Management API, credentials, catalogs, audit and policy modules
 ├── web/                 # WebUI frontend (React/TypeScript; build output served by the gateway)
 ├── tests/               # Offline regression suites
+├── preview/             # Development preview: real gateway, simulated upstream, synthetic accounts
 ├── docs/                # User guides, English and Chinese
 ├── examples/            # Client configuration examples
 ├── scripts/             # Version and dependency-lock tooling
@@ -77,6 +80,7 @@ The template binds to localhost only. Configure HTTPS and restrict network acces
 | [Deployment](docs/deployment.md) | Published images, upgrades, reverse proxy/HTTPS, local setup and CLI login |
 | [Client configuration](docs/clients.md) | Codex CLI, Claude Code, CC Switch and generic clients |
 | [Advanced reference](docs/advanced.md) | Options, APIs, model scheduling, request limits and troubleshooting |
+| [Development preview](docs/development.md) | Run the WebUI and APIs against a simulated upstream, without real accounts |
 
 ## FAQ
 
