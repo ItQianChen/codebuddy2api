@@ -6,6 +6,7 @@ import {
   errorMessage,
   list,
   modelResponse,
+  number,
   object,
   text,
   useResource,
@@ -53,9 +54,10 @@ import {
   type RateProbeControl,
   type RateSource,
 } from "../modelRates";
-import { JobBanner } from "../jobs";
+import { JobBanner, ProgressBanner, type Job } from "../jobs";
 import s from "../ui.module.scss";
 import { SearchInput, Select } from "../fields";
+import { clearToasts, notify } from "../toast";
 export const profiles = ["cn-cli", "cn-work", "intl-cli", "intl-work"];
 const validId = (id: string) => /^[A-Za-z0-9_.:/@-]{1,160}$/.test(id) && ![".", ".."].includes(id);
 export function validateRule(rule: ModelRule, models: ModelRule[]): string | null {
@@ -575,6 +577,45 @@ function matchesCatalog(model: ModelRule, query: string, filter: CatalogFilter):
   if (filter.price === "paid" && (rateOf(model.credits) ?? 0) <= 0) return false;
   return true;
 }
+function rateProbeTitle(job: Job) {
+  return job.meta.scope === "all" ? "一键检测倍率" : `倍率探测 · ${text(job.meta.scope)}`;
+}
+function notifyRateProbe(job: Job) {
+  notify({
+    key: "rate-probe",
+    tone: (number(job.meta.failed) ?? 0) > 0 ? "warn" : "good",
+    title: `${rateProbeTitle(job)}已完成`,
+    body: (
+      <span>
+        {job.total
+          ? `实测计费 ${text(job.meta.billed)} · 确认免费 ${text(job.meta.free)} · 失败 ${text(job.meta.failed)}`
+          : "没有目录声明 0x 的模型"}
+      </span>
+    ),
+  });
+}
+const scanSummary = (scan: CatalogScan) =>
+  `成功 ${scan.success} · 失败 ${scan.failed} · 目录差异 ${scan.differences}`;
+function notifyScan(scan: CatalogScan) {
+  const versions = Object.entries(scan.profiles)
+    .filter(([, row]) => row.distinct > 1)
+    .map(([name, row]) => `${name}：${row.distinct} 组目录版本`)
+    .join("；");
+  const failed = scan.status === "failed";
+  notify({
+    key: "scan",
+    tone: failed ? "bad" : scan.failed > 0 ? "warn" : "good",
+    title: failed ? "全量扫描失败" : "全量扫描已完成",
+    body: (
+      <>
+        <span>{scanSummary(scan)}</span>
+        {failed && scan.error && <span>{scan.error}</span>}
+        {versions && <span>{versions}</span>}
+        {(failed || scan.failed > 0) && <span>失败账号保留上次成功的目录。</span>}
+      </>
+    ),
+  });
+}
 export function Models() {
   const resource = useResource("/models", modelResponse, { cache: true });
   const credentials = useResource("/credentials", credentialResponse, { cache: true });
@@ -587,11 +628,15 @@ export function Models() {
   const [deleting, setDeleting] = useState<ModelRule | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [guardNotice, setGuardNotice] = useState<string | null>(null);
   const [scan, setScan] = useState<CatalogScan | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const outputProbes = useOutputProbes();
-  const rateJob = useRateProbeJob(resource.reload);
+  const rateJob = useRateProbeJob((job) => {
+    resource.reload();
+    notifyRateProbe(job);
+  });
+  // Only a scan this page watched finish raises a toast; a reload does not repeat an old one.
+  const scanRunning = useRef(false);
   const loadScan = useCallback(() => {
     void api
       .get("/models/scan")
@@ -600,6 +645,8 @@ export function Models() {
         setScan(next);
         // A scan that just finished may have refreshed the catalog list.
         if (next.status === "completed" || next.status === "failed") resource.reload();
+        if (next.status !== "running" && scanRunning.current) notifyScan(next);
+        scanRunning.current = next.status === "running";
       })
       .catch(() => {
         // 被动状态轮询失败不升级为页面错误；提交扫描的失败才提示。
@@ -614,13 +661,6 @@ export function Models() {
     const timer = setInterval(loadScan, 2000);
     return () => clearInterval(timer);
   }, [scan?.status, loadScan]);
-  const scanError = scan?.status === "failed" ? scan.error : null;
-  const scanVersions = scan
-    ? Object.entries(scan.profiles)
-        .filter(([, row]) => row.distinct > 1)
-        .map(([name, row]) => `${name}：${row.distinct} 组目录版本`)
-        .join("；")
-    : "";
   const startScan = () => {
     if (scanBusy) return;
     setScanBusy(true);
@@ -628,7 +668,9 @@ export function Models() {
     void api
       .post("/models/scan")
       .then((response) => {
-        setScan(catalogScanResponse(response.data));
+        const next = catalogScanResponse(response.data);
+        scanRunning.current = next.status === "running";
+        setScan(next);
         resource.reload();
       })
       .catch((err: unknown) => setError(errorMessage(err)))
@@ -638,18 +680,23 @@ export function Models() {
     if (!resource.data || busy) return;
     setBusy(true);
     setError(null);
-    setGuardNotice(null);
     void api
       .patch("/settings", {
         revision: resource.data.revision,
         values: { [key]: next },
       })
       .then(() => {
-        setGuardNotice(
-          key === "model_capability_guard" && !next
-            ? "仅关闭新增能力预检；元数据展示、国际图片归并及其他安全限制不变，新请求生效。"
-            : `${key === "model_guard" ? "表外模型拦截" : "模型能力预检"}已${next ? "开启" : "关闭"}。`,
-        );
+        notify({
+          key: "guard",
+          tone: "good",
+          title: `${key === "model_guard" ? "表外模型拦截" : "模型能力预检"}已${next ? "开启" : "关闭"}`,
+          body:
+            key === "model_capability_guard" && !next ? (
+              <span>
+                仅关闭新增能力预检；元数据展示、国际图片归并及其他安全限制不变，新请求生效。
+              </span>
+            ) : undefined,
+        });
         resource.reload();
       })
       .catch((err: unknown) => setError(errorMessage(err)))
@@ -671,6 +718,7 @@ export function Models() {
           <>
             <button
               onClick={() => {
+                clearToasts();
                 resource.reload();
                 credentials.reload();
               }}
@@ -715,45 +763,14 @@ export function Models() {
       <ResourceState {...resource} />
       <ErrorNotice message={error} />
       <ErrorNotice message={rateJob.error} />
-      {rateJob.job?.status === "running" ? (
-        <JobBanner
-          title={
-            rateJob.job.meta.scope === "all"
-              ? "一键检测倍率"
-              : `倍率探测 · ${text(rateJob.job.meta.scope)}`
-          }
-          job={rateJob.job}
-          describe={describeProbe}
-        />
-      ) : (
-        rateJob.job && (
-          <p className={s.note} role="status">
-            倍率检测
-            {rateJob.job.total ? "已完成" : "已完成：没有目录声明 0x 的模型"}
-            ：实测计费 {text(rateJob.job.meta.billed)} · 确认免费 {text(rateJob.job.meta.free)} ·
-            失败 {text(rateJob.job.meta.failed)}
-          </p>
-        )
+      {rateJob.job?.status === "running" && (
+        <JobBanner title={rateProbeTitle(rateJob.job)} job={rateJob.job} describe={describeProbe} />
       )}
       <ErrorNotice message={credentials.error} retry={credentials.reload} />
-      {guardNotice && (
-        <p className={s.successNotice} role="status">
-          {guardNotice}
-        </p>
-      )}
-      {scan && scan.status !== "idle" && (
-        <p className={s.note} role="status">
-          全量扫描
-          {scan.status === "running"
-            ? `进行中 ${scan.completed}/${scan.total}`
-            : scan.status === "completed"
-              ? "已完成"
-              : "失败"}
-          ：成功 {scan.success} · 失败 {scan.failed} · 目录差异 {scan.differences}
-          {scanError ? ` · ${scanError}` : ""}
-          {scanVersions ? ` · ${scanVersions}` : ""}
-          ；失败账号保留上次成功的目录。
-        </p>
+      {scan?.status === "running" && (
+        <ProgressBanner title="扫描全部账号模型" completed={scan.completed} total={scan.total}>
+          <small>{scanSummary(scan)}</small>
+        </ProgressBanner>
       )}
       <Panel
         title="模型目录"

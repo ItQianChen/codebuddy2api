@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { list, object, type RecordValue } from "./api";
 import s from "./ui.module.scss";
 
@@ -80,6 +80,37 @@ export function useJobPolling(
   return { jobs, accept };
 }
 
+/**
+ * A progress banner for work in flight. Without a `total` the bar is indeterminate, for a request
+ * that reports no progress of its own.
+ */
+export function ProgressBanner({
+  title,
+  completed = 0,
+  total,
+  children,
+}: {
+  title: string;
+  completed?: number;
+  total?: number;
+  children: ReactNode;
+}) {
+  return (
+    <div className={s.jobBanner} role="status">
+      <div className={s.jobBannerHead}>
+        <strong>{title}</strong>
+        {total !== undefined && (
+          <span>
+            {completed}/{total}
+          </span>
+        )}
+      </div>
+      {total !== undefined ? <progress value={completed} max={Math.max(total, 1)} /> : <progress />}
+      {children}
+    </div>
+  );
+}
+
 /** A progress banner for one running job: what it is, how far along, and what it is doing now. */
 export function JobBanner({
   title,
@@ -91,14 +122,7 @@ export function JobBanner({
   describe: (item: RecordValue, step: string | null) => string;
 }) {
   return (
-    <div className={s.jobBanner} role="status">
-      <div className={s.jobBannerHead}>
-        <strong>{title}</strong>
-        <span>
-          {job.completed}/{job.total}
-        </span>
-      </div>
-      <progress value={job.completed} max={Math.max(job.total, 1)} />
+    <ProgressBanner title={title} completed={job.completed} total={job.total}>
       {job.current.length ? (
         job.current.map((row, index) => (
           <small key={index}>正在{describe(row.item, row.step)}</small>
@@ -106,6 +130,6 @@ export function JobBanner({
       ) : (
         <small>正在准备…</small>
       )}
-    </div>
+    </ProgressBanner>
   );
 }

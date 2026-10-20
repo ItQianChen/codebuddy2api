@@ -5,7 +5,7 @@ import { Trial } from "../Trial";
 import { TravelSummary } from "../Travel";
 import { Buddy, buddyConfirmation } from "../Buddy";
 import { GrowthTasks, describeGrowth, useGrowthJobs } from "../GrowthTasks";
-import { JobBanner } from "../jobs";
+import { JobBanner, ProgressBanner } from "../jobs";
 import { BalanceExpiry, CreditsPanel } from "../CreditsPanel";
 import { dateLabel, tokenExpiry } from "../credits";
 import {
@@ -49,6 +49,7 @@ import { downloadFilename } from "../downloads";
 import s from "../ui.module.scss";
 import { SearchInput, Select } from "../fields";
 import { popoverHost, usePopover } from "../popover";
+import { clearToasts, notify } from "../toast";
 
 function expiry(value: unknown) {
   return typeof value === "number" ? new Date(value * 1000).toLocaleString("zh-CN") : text(value);
@@ -241,49 +242,89 @@ function ImportDrawer({ onClose, onDone }: { onClose: () => void; onDone: () => 
   );
 }
 
-function MaintenanceResults({ results }: { results: Record<string, unknown>[] }) {
-  return (
-    <Panel title="凭证操作结果">
-      <ul className={s.operationResults} aria-live="polite">
-        {results.map((r, i) => {
-          const complete =
-            r.ok === true &&
-            !(r.travel && typeof r.travel === "object" && object(r.travel).ok === false);
-          return (
-            <li key={i}>
-              <strong>{text(r.name)}</strong>
-              <Badge tone={complete ? "good" : "warn"}>
-                {complete
-                  ? "已完成"
-                  : r.checkin_ok === true ||
-                      r.claimed === true ||
-                      r.departed === true ||
-                      r.buddy_claimed === true ||
-                      r.agreement_accepted === true ||
-                      (r.travel &&
-                        typeof r.travel === "object" &&
-                        (object(r.travel).claimed === true || object(r.travel).departed === true))
-                    ? "部分完成"
-                    : r.skipped
-                      ? "已跳过"
-                      : "未完成"}
-              </Badge>
-              <span>{text(r.message)}</span>
-              <TravelSummary
-                trip={
-                  r.travel && typeof r.travel === "object"
-                    ? object(r.travel)
-                    : r.action === "travel" || r.action === "travel-status"
-                      ? r
-                      : null
-                }
-              />
-            </li>
-          );
-        })}
-      </ul>
-    </Panel>
-  );
+type MaintenanceAction =
+  | "refresh"
+  | "checkin"
+  | "sync"
+  | "travel"
+  | "travel-status"
+  | "daily-chat"
+  | "reset-cooldown";
+const MAINTENANCE_LABELS: Record<MaintenanceAction, string> = {
+  refresh: "刷新 Token",
+  checkin: "签到",
+  sync: "同步余额",
+  travel: "旅行领派",
+  "travel-status": "旅行状态",
+  "daily-chat": "活跃打卡",
+  "reset-cooldown": "清除冷却",
+};
+// Batch runs over every account keep the names of their toolbar buttons.
+const BATCH_LABELS: Partial<Record<MaintenanceAction, string>> = {
+  sync: "同步全部余额",
+  checkin: "批量签到",
+};
+const SHOWN_RESULTS = 5;
+
+function outcomeOf(r: Record<string, unknown>): { label: string; complete: boolean } {
+  const travel = r.travel && typeof r.travel === "object" ? object(r.travel) : null;
+  if (r.ok === true && travel?.ok !== false) return { label: "已完成", complete: true };
+  const partial =
+    r.checkin_ok === true ||
+    r.claimed === true ||
+    r.departed === true ||
+    r.buddy_claimed === true ||
+    r.agreement_accepted === true ||
+    travel?.claimed === true ||
+    travel?.departed === true;
+  return { label: partial ? "部分完成" : r.skipped ? "已跳过" : "未完成", complete: false };
+}
+
+/**
+ * Report a maintenance run as a toast: a batch lists only the accounts that did not finish,
+ * a single account always shows its own result.
+ */
+function notifyMaintenance(title: string, results: Record<string, unknown>[]) {
+  const rows = results.map((r) => ({ r, ...outcomeOf(r) }));
+  const shown = results.length === 1 ? rows : rows.filter((row) => !row.complete);
+  const counts = ["已完成", "部分完成", "已跳过", "未完成"]
+    .map((label) => [label, rows.filter((row) => row.label === label).length] as const)
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${label} ${count}`)
+    .join(" · ");
+  notify({
+    key: "maintenance",
+    tone: shown.every((row) => row.complete) ? "good" : "warn",
+    title,
+    body: (
+      <>
+        {results.length > 1 && <span>{counts}</span>}
+        {shown.length > 0 && (
+          <ul className={s.toastRows}>
+            {shown.slice(0, SHOWN_RESULTS).map(({ r, label, complete }, i) => (
+              <li key={i}>
+                <strong>{text(r.name)}</strong>
+                <Badge tone={complete ? "good" : "warn"}>{label}</Badge>
+                <span>{text(r.message)}</span>
+                <TravelSummary
+                  trip={
+                    r.travel && typeof r.travel === "object"
+                      ? object(r.travel)
+                      : r.action === "travel" || r.action === "travel-status"
+                        ? r
+                        : null
+                  }
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        {shown.length > SHOWN_RESULTS && (
+          <span>另有 {shown.length - SHOWN_RESULTS} 个账号未完成，请在对应卡片核验。</span>
+        )}
+      </>
+    ),
+  });
 }
 
 type ChannelKey = "all" | "cn" | "intl" | "enterprise";
@@ -384,8 +425,6 @@ export function Credentials() {
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [maintenance, setMaintenance] = useState<Record<string, unknown>[]>([]);
   const openDetail = (credential: Credential, tab: DetailTab = "overview") => {
     setDetail({ credential, tab });
   };
@@ -410,24 +449,16 @@ export function Credentials() {
       cancelled = true;
     };
   }, [liveDetail, detail?.tab]);
-  // The maintenance action in flight and its account, or "*" for every account.
-  const [running, setRunning] = useState<string | null>(null);
-  const maintain = (
-    action:
-      | "refresh"
-      | "checkin"
-      | "sync"
-      | "travel"
-      | "travel-status"
-      | "daily-chat"
-      | "reset-cooldown",
-    credential?: Credential,
-  ) => {
+  // The maintenance action in flight: `action:account`, or `action:*` for every account.
+  const [running, setRunning] = useState<{ key: string; title: string } | null>(null);
+  const maintain = (action: MaintenanceAction, credential?: Credential) => {
     if (busy) return;
+    const title = credential
+      ? `${MAINTENANCE_LABELS[action]} · ${credential.name ?? credential.id}`
+      : (BATCH_LABELS[action] ?? MAINTENANCE_LABELS[action]);
     setBusy(true);
-    setRunning(`${action}:${credential?.id ?? "*"}`);
+    setRunning({ key: `${action}:${credential?.id ?? "*"}`, title });
     setError(null);
-    setMaintenance([]);
     const path = credential
       ? `/credentials/${encodeURIComponent(credential.id)}/${action}`
       : `/${action}`;
@@ -441,7 +472,7 @@ export function Credentials() {
         )
           throw new Error("未收到完整操作结果，请刷新列表核验，勿直接重复执行");
         for (const r of results) if (r.travel !== undefined) object(r.travel, "旅行操作结果");
-        setMaintenance(results);
+        notifyMaintenance(title, results);
         if (action === "travel" && credential) {
           if (results.length !== 1 || results[0].id !== credential.id)
             throw new Error("旅行账号或结果未确认，请刷新列表核验");
@@ -464,7 +495,7 @@ export function Credentials() {
   };
   const oauthDone = useCallback(() => {
     setDrawer(null);
-    setNotice("授权完成，凭证已添加。");
+    notify({ tone: "good", title: "授权完成，凭证已添加。" });
     resource.reload();
   }, [resource.reload]);
   const [now, setNow] = useState(Date.now());
@@ -507,7 +538,12 @@ export function Credentials() {
             : field === "auto_growth"
               ? "自动成长补领"
               : "自动活跃打卡";
-      setNotice(`${label}已${enabled ? "开启" : "关闭"}；保存不会立即执行，后续维护按新设置执行。`);
+      notify({
+        key: "preference",
+        tone: "good",
+        title: `${label}已${enabled ? "开启" : "关闭"}`,
+        body: <span>保存不会立即执行，后续维护按新设置执行。</span>,
+      });
     });
   };
   const [channel, setChannel] = useState<ChannelKey>("all");
@@ -583,7 +619,7 @@ export function Credentials() {
       title="同步余额"
       onClick={() => maintain("sync", c)}
     >
-      <RefreshIcon spinning={running === `sync:${c.id}` || running === "sync:*"} />
+      <RefreshIcon spinning={running?.key === `sync:${c.id}` || running?.key === "sync:*"} />
     </button>
   );
   const renderActions = (c: Credential) => {
@@ -909,7 +945,12 @@ export function Credentials() {
         title="凭证管理"
         actions={
           <>
-            <button onClick={resource.reload}>
+            <button
+              onClick={() => {
+                clearToasts();
+                resource.reload();
+              }}
+            >
               <RefreshIcon spinning={resource.refreshing} />
               刷新列表
             </button>
@@ -932,12 +973,11 @@ export function Credentials() {
           </>
         }
       />
-      {!detail && notice && (
-        <p className={s.successNotice} role="status">
-          {notice}
-        </p>
+      {!detail && running && (
+        <ProgressBanner title={running.title}>
+          <small>正在执行，请勿重复提交…</small>
+        </ProgressBanner>
       )}
-      {!detail && busy && <p role="status">操作执行中，请勿重复提交…</p>}
       {growthJobs.jobs.map(growthBanner)}
       <ResourceState {...resource} />
       {!detail && <ErrorNotice message={error} />}
@@ -990,7 +1030,6 @@ export function Credentials() {
           })}
         </div>
       )}
-      {!detail && maintenance.length > 0 && <MaintenanceResults results={maintenance} />}
       <Panel
         title="账号凭证"
         hint={
@@ -1259,7 +1298,10 @@ export function Credentials() {
             confirmation={buddyTarget.confirmation}
             onClose={() => setBuddyTarget(null)}
             onDone={(result) => {
-              setMaintenance([result]);
+              notifyMaintenance(
+                `首次领取猫猫并派遣 · ${buddyTarget.credential.name ?? buddyTarget.credential.id}`,
+                [result],
+              );
               resource.reload();
             }}
           />
@@ -1288,15 +1330,13 @@ export function Credentials() {
             title={`凭证详情 · ${liveDetail.name ?? liveDetail.id}`}
             onClose={() => setDetail(null)}
           >
-            {notice && (
-              <p className={s.successNotice} role="status">
-                {notice}
-              </p>
+            {running && (
+              <ProgressBanner title={running.title}>
+                <small>正在执行，请勿重复提交…</small>
+              </ProgressBanner>
             )}
-            {busy && <p role="status">操作执行中，请勿重复提交…</p>}
             {growthBanner(growthJobs.byAccount(liveDetail.id))}
             <ErrorNotice message={error} />
-            {maintenance.length > 0 && <MaintenanceResults results={maintenance} />}
             <div className={s.detailBar}>
               <div className={s.credCardBadges}>
                 {renderHealthBadge(liveDetail)}

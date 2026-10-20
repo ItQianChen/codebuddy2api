@@ -6,6 +6,7 @@ export { DrawerPresence } from "./presence";
 import s from "./ui.module.scss";
 import { useT } from "./i18n";
 import { Select } from "./fields";
+import { ToastRegion } from "./toast";
 
 export function Icon({ name = "grid" }: { name?: string }) {
   const paths: Record<string, string> = {
@@ -127,6 +128,7 @@ export function PageTitle({
         {description && <p>{description}</p>}
       </div>
       <div className={s.actions}>{actions}</div>
+      <ToastRegion />
     </div>
   );
 }
@@ -270,6 +272,8 @@ export function Drawer({
           </button>
         </div>
         <div className={s.drawerBody}>{children}</div>
+        {/* Toasts raised while the drawer is open sit over it; a closing drawer hands them back. */}
+        {!exiting && <ToastRegion />}
       </section>
     </dialog>
   );

@@ -7,6 +7,7 @@ import { api, useSession } from "./api";
 import { Markdown } from "./markdown";
 import { Storage } from "./pages/Storage";
 import { Updates } from "./pages/Updates";
+import { ToastRegion } from "./toast";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -95,6 +96,48 @@ describe("updates page", () => {
     fireEvent.click(screen.getByRole("link", { name: /v1\.4\.0/ }));
     expect(await screen.findByText("Older notes")).toBeTruthy();
     expect(screen.getAllByText("当前").length).toBeGreaterThan(0);
+  });
+
+  it("answers every update check with a toast, also when nothing changed or it failed", async () => {
+    vi.spyOn(api, "get").mockResolvedValue({
+      data: payload({ latest: "1.4.0", update_available: false, releases: releases.slice(1) }),
+    });
+    const post = vi.spyOn(api, "post").mockResolvedValue({
+      data: payload({ latest: "1.4.0", update_available: false, releases: releases.slice(1) }),
+    });
+    render(
+      <>
+        <MemoryRouter initialEntries={["/dashboard/updates"]}>
+          <Routes>
+            <Route path="/dashboard/updates" element={<Updates />} />
+          </Routes>
+        </MemoryRouter>
+        <ToastRegion />
+      </>,
+    );
+    const button = await screen.findByRole("button", { name: "检查更新" });
+    fireEvent.click(button);
+    const body = await screen.findByText("当前 v1.4.0 就是最新的稳定版本，无需更新。");
+    expect(body.previousElementSibling?.textContent).toBe("已是最新版本");
+
+    post.mockResolvedValueOnce({ data: payload() });
+    // The toast lands before the request settles; the button re-enables right after.
+    await waitFor(() => expect(button).toHaveProperty("disabled", false));
+    fireEvent.click(button);
+    expect(await screen.findByText("发现新版本 v1.5.0")).toBeTruthy();
+
+    post.mockResolvedValueOnce({
+      data: payload({ error: "无法连接 GitHub，请检查网络或代理设置（HTTPS_PROXY）" }),
+    });
+    await waitFor(() => expect(button).toHaveProperty("disabled", false));
+    fireEvent.click(button);
+    expect(await screen.findByText("检查更新失败")).toBeTruthy();
+    expect(screen.getAllByText(/无法连接 GitHub/).length).toBeGreaterThan(0);
+
+    post.mockRejectedValueOnce(new Error("网络中断"));
+    await waitFor(() => expect(button).toHaveProperty("disabled", false));
+    fireEvent.click(button);
+    expect(await screen.findByText("网络中断")).toBeTruthy();
   });
 
   it("confirms before installing and polls the running job", async () => {
