@@ -31,6 +31,10 @@ COPY VERSION ./
 COPY converter.py ./
 COPY app/ ./app/
 COPY --from=webui / ./web/dist/
+# Where the image came from; the Updates page warns when an edge (main) image installs a release.
+ARG BUILD_CHANNEL=local
+ARG BUILD_COMMIT=
+RUN printf '{"channel": "%s", "commit": "%s", "version": "%s"}' "$BUILD_CHANNEL" "$BUILD_COMMIT" "$(cat VERSION)" > build.json
 EXPOSE 8787
 # Listen on container interfaces; host port mapping controls external access.
 ENV CODEBUDDY2API_ALLOW_OPEN_NOAUTH=true

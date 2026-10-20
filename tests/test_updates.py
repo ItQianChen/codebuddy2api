@@ -459,6 +459,35 @@ class MirrorTests(UpdaterFixture):
         self.assertEqual(results["https://limited.example/"]["error"], "HTTP 429")
 
 
+class BuildProvenanceTests(UpdaterFixture):
+    def test_a_git_checkout_reports_whether_it_is_exactly_the_tagged_release(self):
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        (self.root / ".gitignore").write_text("auth/\n.env\n")
+        for command in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "base"]):
+            subprocess.run([*git, *command], cwd=self.root, check=True, capture_output=True)
+        updater = self.updater("git")
+        build = updater.build()
+        self.assertEqual((build["tag_commit"], build["dirty"], build["exact"]), (None, False, False))
+        subprocess.run([*git, "tag", "v1.0.0"], cwd=self.root, check=True, capture_output=True)
+        self.assertTrue(updater.build()["exact"])
+        (self.root / "converter.py").write_text("# edited\n")
+        self.assertEqual((updater.build()["dirty"], updater.build()["exact"]), (True, False))
+        subprocess.run([*git, "commit", "-qam", "ahead"], cwd=self.root, check=True, capture_output=True)
+        build = updater.build()
+        self.assertNotEqual(build["commit"], build["tag_commit"])
+        self.assertEqual((build["dirty"], build["exact"]), (False, False))
+        self.assertEqual(updater.view()["build"]["commit"], build["commit"])
+
+    def test_an_image_reports_its_channel_only_while_it_runs_its_own_version(self):
+        updater = self.updater("docker")
+        self.assertIsNone(updater.build())
+        (self.root / "build.json").write_text('{"channel": "edge", "commit": "0123456789abcdef", "version": "1.0.0"}')
+        self.assertEqual(updater.build(), {"channel": "edge", "commit": "0123456789ab"})
+        # After a one-click update the program is a release while the file still describes the image.
+        (self.root / "build.json").write_text('{"channel": "edge", "commit": "0123456789abcdef", "version": "0.9.0"}')
+        self.assertIsNone(updater.build())
+
+
 class BackupTests(UpdaterFixture):
     def backups(self, **settings):
         self.config.update(settings)

@@ -89,6 +89,15 @@ const zh = {
   "updates.found": "发现新版本 {version}",
   "updates.foundBody": "可在下方阅读更新说明后一键更新。",
   "updates.checkFailed": "检查更新失败",
+  "updates.drift.ahead":
+    "当前提交 {commit} 不是 {version} 标签的提交 {tagCommit}，运行的代码可能不是 {version}。一键更新后 HEAD 不移动也会如此，可执行 git checkout 对齐。",
+  "updates.drift.aheadDirty":
+    "当前提交 {commit} 不是 {version} 标签的提交 {tagCommit}，且有未提交的修改，运行的代码可能不是 {version}。",
+  "updates.drift.dirty": "Git 工作区有未提交的修改，运行的代码可能不是 {version}。",
+  "updates.drift.noTag":
+    "本地没有 {version} 标签，无法核对当前提交 {commit}；运行的代码可能不是 {version}，可先执行 git fetch --tags。",
+  "updates.drift.edge":
+    "当前是 edge 镜像（main 分支提交 {commit}），代码可能比 {version} 稳定版更新。一键安装稳定版可能与 edge 已写入的数据或配置不兼容，导致问题；如需稳定版，建议改用 latest 或版本号镜像重新部署。",
   "updates.unknown": "尚未获取发布信息",
   "updates.repository": "GitHub 仓库",
   "updates.panel": "更新",
@@ -535,6 +544,16 @@ const en: Record<MessageKey, string> = {
   "updates.found": "New version {version} available",
   "updates.foundBody": "Read the release notes below, then update in one click.",
   "updates.checkFailed": "Update check failed",
+  "updates.drift.ahead":
+    "The checked-out commit {commit} is not the {version} tag's commit {tagCommit}, so the running code may not be {version}. One-click updates leave HEAD in place and show this too; git checkout the tag to align.",
+  "updates.drift.aheadDirty":
+    "The checked-out commit {commit} is not the {version} tag's commit {tagCommit} and there are uncommitted changes, so the running code may not be {version}.",
+  "updates.drift.dirty":
+    "The git checkout has uncommitted changes, so the running code may not be {version}.",
+  "updates.drift.noTag":
+    "There is no local {version} tag to check commit {commit} against, so the running code may not be {version}; run git fetch --tags first.",
+  "updates.drift.edge":
+    "This is an edge image (main at {commit}) and may be newer than the {version} release. Installing a stable release in place may not match the data or settings edge already wrote and can cause problems; for the stable channel, redeploy with the latest or a version image instead.",
   "updates.unknown": "No release information yet",
   "updates.repository": "GitHub repository",
   "updates.panel": "Update",
