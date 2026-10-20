@@ -31,6 +31,8 @@ export function Icon({ name = "grid" }: { name?: string }) {
     system: "M3 4h18v13H3zM8 21h8m-4-4v4",
     down: "M12 3v12m0 0 4-4m-4 4-4-4M5 21h14",
     up: "M12 21V9m0 0 4 4m-4-4-4 4M5 3h14",
+    clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 4.5V12l3 2",
+    restore: "M3 12a9 9 0 1 0 2.6-6.4L3 8m0-5v5h5",
     globe:
       "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm-9 9h18M12 3c2.3 2.4 3.5 5.4 3.5 9s-1.2 6.6-3.5 9c-2.3-2.4-3.5-5.4-3.5-9s1.2-6.6 3.5-9Z",
     // Feather's "github" mark (MIT), drawn in the same stroke style as the rest of the set.

@@ -14,6 +14,7 @@ BLOCKED = tuple((method, re.compile(path)) for method, path in (
     ("PATCH", r"/admin/settings"),
     ("POST", r"/admin/logs/clear"),
     ("POST", r"/admin/storage/archive"),
+    ("POST", r"/admin/storage/backups"),
     ("DELETE", r"/admin/storage/backups/[^/]+"),
     ("POST", r"/admin/update/(install|mirror)"),
 ))

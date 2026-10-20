@@ -154,7 +154,7 @@ describe("updates page", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/update/install", { tag: "v1.5.0" }));
     expect(await screen.findByRole("status")).toBeTruthy();
-    expect(screen.getByText("正在备份当前版本…")).toBeTruthy();
+    expect(screen.getByText("正在备份配置…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /更新到 v1\.5\.0/ })).toBeNull();
   });
 

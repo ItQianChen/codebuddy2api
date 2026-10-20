@@ -23,6 +23,7 @@ from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
 from .settings import SCHEMA, resolve_settings, validate_settings
 from .site_routing import PROFILE_DOMAINS
+from .backups import BackupError
 from .updates import UpdateError
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -110,6 +111,12 @@ def install_admin(app, config, gateway):
         found = config.get("updater")
         if found is None:
             raise UpdateError("更新服务未启用")
+        return found
+
+    def backups():
+        found = config.get("backups")
+        if found is None:
+            raise BackupError("备份服务未启用")
         return found
 
     def known_models():
@@ -244,7 +251,7 @@ def install_admin(app, config, gateway):
                     return result
                 except ConflictError:
                     return error_response(409, "配置已更新，请刷新后重试")
-                except UpdateError as exc:
+                except (UpdateError, BackupError) as exc:
                     # 422, not 409: the WebUI rewrites every 409 into a generic save conflict.
                     return error_response(422, str(exc))
                 except HTTPException as exc:
@@ -749,8 +756,10 @@ def install_admin(app, config, gateway):
                 archives = sorted((entry.name for entry in directory.glob("audit-*.jsonl")), reverse=True)[:20]
             except OSError as exc:
                 audit._fault(exc)
-        backups = await run_in_threadpool(config["updater"].backups) if config.get("updater") else []
-        return JSONResponse({**result, "archives": archives, "backups": backups})
+        store = config.get("backups")
+        listed = await run_in_threadpool(store.list) if store else []
+        schedule = await run_in_threadpool(store.schedule) if store else None
+        return JSONResponse({**result, "archives": archives, "backups": listed, "backup_schedule": schedule})
 
     @route("POST", "/admin/storage/archive")
     async def storage_archive(request):
@@ -766,11 +775,17 @@ def install_admin(app, config, gateway):
                                   "events": result.get("archived_events")})
         return JSONResponse(result)
 
+    @route("POST", "/admin/storage/backups")
+    async def storage_backup_create(request):
+        name = await run_in_threadpool(backups().create, "manual")
+        event("storage.backup_created", {"file": name})
+        return JSONResponse({"created": name})
+
     @route("GET", "/admin/storage/backups/{name}")
     async def storage_backup_download(request):
         try:
-            path = updater().backup_path(request.path_params["name"])
-        except UpdateError as exc:
+            path = backups().path(request.path_params["name"])
+        except BackupError as exc:
             return error_response(404, str(exc))
         return FileResponse(path, media_type="application/gzip", filename=path.name)
 
@@ -778,8 +793,8 @@ def install_admin(app, config, gateway):
     async def storage_backup_delete(request):
         name = request.path_params["name"]
         try:
-            await run_in_threadpool(updater().delete_backup, name)
-        except UpdateError as exc:
+            await run_in_threadpool(backups().delete, name)
+        except BackupError as exc:
             return error_response(404, str(exc))
         event("storage.backup_deleted", {"file": name})
         return JSONResponse({"deleted": name})
