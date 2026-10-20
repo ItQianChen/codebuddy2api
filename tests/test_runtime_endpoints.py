@@ -820,7 +820,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
         return path
 
     def test_main_publishes_cached_usage_before_serving(self):
-        """The aggregate must be populated by the time uvicorn.run is entered."""
+        """The aggregate must be populated by the time the server is started."""
         path = self.credential()
         # Preseed the cache for the identity this credential will resolve to.
         probe = converter.CredentialPool([path], blocks_path=self.root / "blocks.json")
@@ -846,7 +846,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
                 # Inspect the aggregate at the moment the server would start serving.
                 observed["usage"] = converter.CONFIG.get("usage_daily")
                 observed["accounts"] = converter.CONFIG.get("usage_daily_accounts")
-            stack.enter_context(patch.object(converter.uvicorn, "run", side_effect=capture))
+            stack.enter_context(patch.object(converter, "run_server", side_effect=capture))
             converter.main()
 
         self.assertIsNotNone(observed["usage"], "main() never published usage")
@@ -869,7 +869,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
             stack.enter_context(patch.object(converter, "seed_credentials"))
             stack.enter_context(patch.object(converter, "preflight", return_value=True))
             stack.enter_context(patch.object(runtime_management, "install"))
-            stack.enter_context(patch.object(converter.uvicorn, "run",
+            stack.enter_context(patch.object(converter, "run_server",
                                             side_effect=lambda *a, **k: observed.setdefault("usage",
                                                                                             converter.CONFIG.get("usage_daily"))))
             converter.main()
@@ -900,7 +900,7 @@ class StartupUsageHydrationTests(unittest.TestCase):
                 events.append(("thread", converter.CONFIG.get("usage_daily") is not None))
                 return Mock()
             stack.enter_context(patch.object(converter.threading, "Thread", side_effect=note_thread))
-            stack.enter_context(patch.object(converter.uvicorn, "run"))
+            stack.enter_context(patch.object(converter, "run_server"))
             converter.main()
         # Every thread must have been started after usage was published.
         self.assertTrue(events)
@@ -929,7 +929,7 @@ class ConfigurationTests(unittest.TestCase):
             stack.enter_context(patch.object(converter, "CredentialPool", return_value=Mock(first=lambda: None)))
             stack.enter_context(patch.object(converter, "credits_mod", None))
             stack.enter_context(patch.object(converter.threading, "Thread"))
-            server = stack.enter_context(patch.object(converter.uvicorn, "run"))
+            server = stack.enter_context(patch.object(converter, "run_server"))
             from app import runtime_management
             close = stack.enter_context(patch.object(runtime_management, "close", wraps=runtime_management.close))
             if invalid:

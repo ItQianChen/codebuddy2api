@@ -87,7 +87,7 @@ from app.content_filter import ContentFilterDetector, is_filter_error
 from app.request_limits import ImageLimitError, apply_image_policy
 from app.safe_logging import format_log_body, sanitize_log_text
 from app import perf_metrics
-from app.startup import allows_open_noauth, load_startup_env, run_server
+from app.startup import allows_open_noauth, capture_launch, load_startup_env, restart_process, run_server
 from app.site_routing import (DOMESTIC, INTERNATIONAL, PROFILE_ENDPOINTS, site_for_auth, site_for_headers,
                               profile_for_auth, profile_for_headers, profile_region, profile_product,
                               profile_site, chat_url_for_headers, search_url_for_headers, refresh_url_for_auth)
@@ -5241,6 +5241,7 @@ def config_command(args) -> int:
 
 
 def main():
+    launch = capture_launch()  # Before .env loading, so a restart re-reads .env as a fresh start would.
     offline_config = _is_config_invocation(sys.argv[1:])
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]) or offline_config:
         dotenv_keys = set()
@@ -5447,6 +5448,8 @@ def main():
     if credits_mod is not None:
         threading.Thread(target=_housekeeper_loop, args=(CONFIG["cred_pool"], ledger),
                          daemon=True, name="cred-housekeeper").start()
+    if (updater := CONFIG.get("updater")) is not None:
+        threading.Thread(target=updater.check_loop, daemon=True, name="update-check").start()
 
     if not args.skip_check:
         preflight()
@@ -5482,6 +5485,7 @@ def main():
     # Record service startup.
     _log(f"==== converter 启动 ====")
 
+    CONFIG["launch"] = launch
     try:
         run_server(app, CONFIG, host=args.host, port=args.port)
     finally:
@@ -5491,6 +5495,10 @@ def main():
             except Exception:
                 pass
         runtime_management.close(CONFIG)
+    if CONFIG.get("restart_requested"):
+        # A self-update swapped the program files; start them with the original invocation.
+        sys.stderr.write("[update] 正在按原启动参数重启…\n")
+        restart_process(launch)
 
 
 if __name__ == "__main__":

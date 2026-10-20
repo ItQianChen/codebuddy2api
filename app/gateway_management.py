@@ -1,6 +1,7 @@
 """Management views over the existing credential pool, without storing tokens."""
 
 import hashlib
+import re
 import time
 from pathlib import Path
 
@@ -419,7 +420,9 @@ class Management:
 def install_pages(app, directory):
     """Fallback only applies to pages; management/client APIs never serve HTML."""
     root = Path(directory).resolve()
-    pages = {"", "models", "credentials", "logs", "settings", "login"}
+    pages = {"", "models", "credentials", "logs", "storage", "settings", "updates", "login"}
+    # Release detail pages carry the tag, whose dots would otherwise read as a file suffix.
+    release_page = re.compile(r"updates/v\d+\.\d+\.\d+").fullmatch
     assets = StaticFiles(directory=root / "assets", check_dir=False)
 
     @app.api_route("/dashboard/assets/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
@@ -437,7 +440,7 @@ def install_pages(app, directory):
     def dashboard_page(page=""):
         if page == "assets" or page.startswith("assets/"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        if page not in pages:
+        if page not in pages and not release_page(page):
             if Path(page).suffix:
                 return JSONResponse({"detail": "Not Found"}, status_code=404)
             return RedirectResponse("/dashboard", status_code=302)

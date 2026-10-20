@@ -14,7 +14,7 @@ import zipfile
 
 from fastapi import HTTPException, Request
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from . import auth_oauth
 from . import perf_metrics
@@ -23,6 +23,7 @@ from .control_store import ConflictError, validate_model
 from .credential_io import CredentialFileError, MAX_CREDENTIAL_BYTES, _valid_name, read_import_file
 from .settings import SCHEMA, resolve_settings, validate_settings
 from .site_routing import PROFILE_DOMAINS
+from .updates import UpdateError
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 CLEAR_CONFIRMATION = "清空全部日志与统计"
@@ -104,6 +105,12 @@ def install_admin(app, config, gateway):
 
     def selected(identity):
         return next((item for item in inventory() if identity == (item.get("account_key") or item.get("id"))), None)
+
+    def updater():
+        found = config.get("updater")
+        if found is None:
+            raise UpdateError("更新服务未启用")
+        return found
 
     def known_models():
         return [item["id"] if isinstance(item, dict) else item for item in gateway.admin_model_inventory()]
@@ -237,6 +244,9 @@ def install_admin(app, config, gateway):
                     return result
                 except ConflictError:
                     return error_response(409, "配置已更新，请刷新后重试")
+                except UpdateError as exc:
+                    # 422, not 409: the WebUI rewrites every 409 into a generic save conflict.
+                    return error_response(422, str(exc))
                 except HTTPException as exc:
                     return error_response(exc.status_code, "管理操作不符合当前状态，请刷新后重试")
                 except ValueError:
@@ -739,7 +749,8 @@ def install_admin(app, config, gateway):
                 archives = sorted((entry.name for entry in directory.glob("audit-*.jsonl")), reverse=True)[:20]
             except OSError as exc:
                 audit._fault(exc)
-        return JSONResponse({**result, "archives": archives})
+        backups = await run_in_threadpool(config["updater"].backups) if config.get("updater") else []
+        return JSONResponse({**result, "archives": archives, "backups": backups})
 
     @route("POST", "/admin/storage/archive")
     async def storage_archive(request):
@@ -754,6 +765,64 @@ def install_admin(app, config, gateway):
                                   "requests": result.get("archived_requests"),
                                   "events": result.get("archived_events")})
         return JSONResponse(result)
+
+    @route("GET", "/admin/storage/backups/{name}")
+    async def storage_backup_download(request):
+        try:
+            path = updater().backup_path(request.path_params["name"])
+        except UpdateError as exc:
+            return error_response(404, str(exc))
+        return FileResponse(path, media_type="application/gzip", filename=path.name)
+
+    @route("DELETE", "/admin/storage/backups/{name}")
+    async def storage_backup_delete(request):
+        name = request.path_params["name"]
+        try:
+            await run_in_threadpool(updater().delete_backup, name)
+        except UpdateError as exc:
+            return error_response(404, str(exc))
+        event("storage.backup_deleted", {"file": name})
+        return JSONResponse({"deleted": name})
+
+    @route("GET", "/admin/update")
+    async def update_get(request):
+        return JSONResponse(updater().view())
+
+    @route("POST", "/admin/update/check")
+    async def update_check(request):
+        return JSONResponse(await run_in_threadpool(updater().check, True))
+
+    @route("POST", "/admin/update/mirror")
+    async def update_mirror(request):
+        body = await _body(request, 4096)
+        try:
+            values = validate_settings({"update_mirror": body.get("mirror")})
+        except ValueError as exc:
+            raise UpdateError(str(exc)) from None
+
+        def apply():
+            with mutation_lock:
+                if any(item["key"] == "update_mirror" and item["locked"] for item in resolve_settings(config)):
+                    raise UpdateError("下载镜像由 CLI 或环境变量锁定，请修改启动配置")
+                control.update_settings(values, control.snapshot()["revision"])
+                config.update(values)
+                config.setdefault("settings_sources", {})["update_mirror"] = "management"
+            event("settings.updated", {"code": "update_mirror"})
+            return JSONResponse(updater().view())
+        return await run_in_threadpool(apply)
+
+    @route("POST", "/admin/update/mirrors/test")
+    async def update_mirrors_test(request):
+        return JSONResponse({"results": await run_in_threadpool(updater().test_mirrors)})
+
+    @route("POST", "/admin/update/install")
+    async def update_install(request):
+        tag = (await _body(request, 4096)).get("tag")
+        if not isinstance(tag, str):
+            raise ValueError("tag 必须为字符串")
+        result = await run_in_threadpool(updater().install, tag)
+        event("update.started", {"to": tag})
+        return JSONResponse(result, status_code=202)
 
     @route("GET", "/admin/dashboard")
     async def dashboard_get(request):

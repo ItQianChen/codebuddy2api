@@ -14,6 +14,7 @@ from .inference_auth import InferenceAuthMiddleware
 from .model_policy import PolicyScopeMiddleware
 from .observability import AuditMiddleware
 from .settings import SCHEMA, apply_persisted_settings
+from .updates import Updater
 
 
 class UnavailableAudit:
@@ -103,6 +104,8 @@ def initialize(gateway, args, argv=None, *, parser=None, dotenv_keys=()):
         config["audit_store"] = UnavailableAudit(type(error).__name__)
         print("[audit] 日志库不可用，推理服务继续；请检查目录权限或使用备份恢复日志库。", file=sys.stderr)
     config["management"] = Management(gateway)
+    config["updater"] = Updater(config, root=Path(gateway.__file__).resolve().parent,
+                                data_dir=root, version=gateway.APP_VERSION)
     return config["management"]
 
 

@@ -49,6 +49,8 @@ The build includes the WebUI; Node.js and Python are not required on the host. O
 
 ### Upgrades and recreates
 
+The WebUI **Updates** page can also update or roll back a running container in one click; see [Updates](webui.md#updates). Those changes live in the container's writable layer, so recreating the container returns to the image version. To follow new images instead, run `docker compose pull -q && docker compose up -d --no-build` from a host crontab.
+
 After editing `.env`, repeat the appropriate `docker compose up -d` command to recreate containers whose configuration changed. Rebuild after updating local source; select and pull the new version when using published images. `docker compose restart` alone does not apply changed environment values. Preserve the data directory to retain login state.
 
 ## Reverse proxy and HTTPS
@@ -112,7 +114,7 @@ A successful run writes the values and disables the Dashboard notice in one revi
 
 ### Upgrade and state migration
 
-Stop the gateway and back up the entire data directory first. Startup imports legacy JSON sessions, cooldowns, credit/trial history, catalogs and usage into `control.sqlite3` once. Old files remain as backups and are no longer read or updated. Invalid critical state or a failed migration stops startup; repair it or restore a backup rather than deleting ledgers to bypass validation.
+Release-archive installs and git checkouts can update or roll back in one click on the WebUI **Updates** page: it verifies the archive, backs up the replaced program files and control database, swaps them in place and restarts with the original arguments; see [Updates](webui.md#updates). For a manual upgrade, stop the gateway and back up the entire data directory first. Startup imports legacy JSON sessions, cooldowns, credit/trial history, catalogs and usage into `control.sqlite3` once. Old files remain as backups and are no longer read or updated. Invalid critical state or a failed migration stops startup; repair it or restore a backup rather than deleting ledgers to bypass validation.
 
 SQLite state read/validation failures stop startup without deleting sessions or replacing state with empty defaults. Repair the control database before retrying; only rebuildable cache write failures may retain the current in-memory data with a warning.
 

@@ -8,6 +8,7 @@ import { Credentials } from "./pages/Credentials";
 import { Logs } from "./pages/Logs";
 import { Settings } from "./pages/Settings";
 import { Storage } from "./pages/Storage";
+import { Updates } from "./pages/Updates";
 import { Appearance } from "./appearance";
 import s from "./ui.module.scss";
 import { LanguageProvider, chooseLanguage, serverPreference, useT } from "./i18n";
@@ -19,6 +20,7 @@ const navigation = [
   ["/logs", "nav.logs", "logs"],
   ["/storage", "nav.storage", "database"],
   ["/settings", "nav.settings", "settings"],
+  ["/updates", "nav.updates", "up"],
 ];
 export function Guard() {
   const t = useT();
@@ -48,6 +50,14 @@ function Shell() {
   const location = useLocation();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    // Cached server-side; the gateway checks releases in the background.
+    void api
+      .get<unknown>("/update")
+      .then((response) => setUpdateAvailable(object(response.data).update_available === true))
+      .catch(() => undefined);
+  }, []);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem("codebuddy.sidebar.collapsed") === "true";
@@ -83,7 +93,8 @@ function Shell() {
         <p className={s.navLabel}>{t("app.workspace")}</p>
         <nav id="workspace-navigation" aria-label={t("app.primaryNav")}>
           {navigation.map(([path, labelKey, icon]) => {
-            const label = t(labelKey);
+            const flagged = path === "/updates" && updateAvailable;
+            const label = flagged ? `${t(labelKey)} · ${t("updates.available")}` : t(labelKey);
             return (
               <NavLink
                 key={path}
@@ -95,7 +106,8 @@ function Shell() {
                 className={({ isActive }) => `${s.navItem} ${isActive ? s.active : ""}`}
               >
                 <Icon name={icon} />
-                <span className={s.navText}>{label}</span>
+                <span className={s.navText}>{t(labelKey)}</span>
+                {flagged && <span className={s.navDot} />}
                 <span className={s.navArrow}>
                   <Icon name="arrow" />
                 </span>
@@ -122,8 +134,12 @@ function Shell() {
           <span>
             {t("app.workspace")} <span className={s.separator}>/</span>{" "}
             {t(
-              navigation.find(([path]) => `/dashboard${path}` === location.pathname)?.[1] ??
-                "nav.overview",
+              navigation.find(
+                ([path]) =>
+                  path &&
+                  (location.pathname === `/dashboard${path}` ||
+                    location.pathname.startsWith(`/dashboard${path}/`)),
+              )?.[1] ?? "nav.overview",
             )}
           </span>
           <div className={s.actions}>
@@ -229,6 +245,8 @@ export function AppRoutes() {
           <Route path="logs" element={<Logs />} />
           <Route path="settings" element={<Settings />} />
           <Route path="storage" element={<Storage />} />
+          <Route path="updates" element={<Updates />} />
+          <Route path="updates/:tag" element={<Updates />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

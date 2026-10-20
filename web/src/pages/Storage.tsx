@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, errorMessage, number, object, text, useResource } from "../api";
+import { api, errorMessage, number, object, text, useResource, type RecordValue } from "../api";
 import { useT } from "../i18n";
 import {
   Badge,
@@ -97,6 +97,87 @@ function ArchivePanel({ archives, reload }: { archives: unknown[]; reload: () =>
   );
 }
 
+function BackupPanel({ backups, reload }: { backups: RecordValue[]; reload: () => void }) {
+  const t = useT();
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dir = "${CODEBUDDY_AUTH_DIR:-auth}";
+  return (
+    <Panel title={t("storage.backups")} hint={t("storage.backupsHint")}>
+      <div className={s.panelBody}>
+        <p className={s.storageLead}>{t("storage.backupsDesc")}</p>
+        {backups.length ? (
+          <ul className={s.archiveList}>
+            {backups.map((backup) => {
+              const name = text(backup.name);
+              const created = number(backup.created_at);
+              return (
+                <li key={name}>
+                  <span title={name}>
+                    v{text(backup.from)} → v{text(backup.to)} ·{" "}
+                    {created === null ? "—" : new Date(created * 1000).toLocaleString("zh-CN")} ·{" "}
+                    {bytes(backup.size)}
+                  </span>
+                  <span className={s.backupActions}>
+                    <a href={`/admin/storage/backups/${encodeURIComponent(name)}`} download={name}>
+                      {t("storage.backupDownload")}
+                    </a>
+                    {confirming === name ? (
+                      <button
+                        type="button"
+                        className={s.danger}
+                        disabled={busy}
+                        onClick={() => {
+                          setBusy(true);
+                          setError(null);
+                          void api
+                            .delete(`/storage/backups/${encodeURIComponent(name)}`)
+                            .then(() => {
+                              setConfirming(null);
+                              reload();
+                            })
+                            .catch((err: unknown) => setError(errorMessage(err)))
+                            .finally(() => setBusy(false));
+                        }}
+                      >
+                        {t("storage.backupConfirmDelete")}
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => setConfirming(name)}>
+                        {t("storage.backupDelete")}
+                      </button>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <Empty title={t("storage.backupsEmpty")} />
+        )}
+        <ErrorNotice message={error} />
+        <pre className={s.codeBlock}>
+          {`${t("storage.step.stop")}
+
+${t("storage.restore.extract")}
+mkdir -p /tmp/codebuddy-restore
+tar -xzf "${dir}/backups/<backup>.tar.gz" -C /tmp/codebuddy-restore
+
+${t("storage.restore.code")}
+cp -a /tmp/codebuddy-restore/code/. ./
+
+${t("storage.restore.data")}
+rm -f "${dir}/control.sqlite3-wal" "${dir}/control.sqlite3-shm"
+cp -a /tmp/codebuddy-restore/data/. "${dir}/"
+
+${t("storage.restore.start")}`}
+        </pre>
+      </div>
+    </Panel>
+  );
+}
+
 export function Storage() {
   const t = useT();
   const resource = useResource("/storage", normalize);
@@ -104,6 +185,9 @@ export function Storage() {
   const d = resource.data;
   const reclaimable = number(d?.reclaimable_bytes);
   const archives = Array.isArray(d?.archives) ? d.archives : [];
+  const backups = Array.isArray(d?.backups)
+    ? d.backups.filter((item): item is RecordValue => typeof item === "object" && item !== null)
+    : [];
   const stateLabel =
     d?.degraded === true
       ? t("storage.stateDegraded")
@@ -182,20 +266,21 @@ export function Storage() {
               </small>
             </article>
           </div>
-          <div className={s.storageSplit}>
-            <ArchivePanel archives={archives} reload={resource.reload} />
-            <Panel title={t("storage.vacuum")} hint={t("storage.cleanup")}>
-              <div className={s.panelBody}>
-                <p className={s.storageLead}>
-                  {t("storage.vacuumDesc", {
-                    reclaimable:
-                      reclaimable !== null && reclaimable > 0
-                        ? t("storage.vacuumReclaim", { size: bytes(reclaimable) })
-                        : "",
-                  })}
-                </p>
-                <pre className={s.codeBlock}>
-                  {`${t("storage.step.stop")}
+          <div className={s.stack}>
+            <div className={s.storageSplit}>
+              <ArchivePanel archives={archives} reload={resource.reload} />
+              <Panel title={t("storage.vacuum")} hint={t("storage.cleanup")}>
+                <div className={s.panelBody}>
+                  <p className={s.storageLead}>
+                    {t("storage.vacuumDesc", {
+                      reclaimable:
+                        reclaimable !== null && reclaimable > 0
+                          ? t("storage.vacuumReclaim", { size: bytes(reclaimable) })
+                          : "",
+                    })}
+                  </p>
+                  <pre className={s.codeBlock}>
+                    {`${t("storage.step.stop")}
 docker compose down        ${t("storage.step.stopLocal")}
 
 ${t("storage.step.vacuum")}
@@ -204,19 +289,21 @@ sqlite3 "\${CODEBUDDY_AUTH_DIR:-auth}/logs.sqlite3" \\
 
 ${t("storage.step.restart")}
 docker compose up -d`}
-                </pre>
-                <small className={s.storageSubtle}>{t("storage.vacuumNote")}</small>
-                <div className={s.cleanupBox}>
-                  <div>
-                    <strong>{t("storage.cleanup")}</strong>
-                    <p>{t("storage.cleanupDesc")}</p>
+                  </pre>
+                  <small className={s.storageSubtle}>{t("storage.vacuumNote")}</small>
+                  <div className={s.cleanupBox}>
+                    <div>
+                      <strong>{t("storage.cleanup")}</strong>
+                      <p>{t("storage.cleanupDesc")}</p>
+                    </div>
+                    <button type="button" onClick={() => setClearing(true)}>
+                      {t("storage.cleanupOpen")}
+                    </button>
                   </div>
-                  <button type="button" onClick={() => setClearing(true)}>
-                    {t("storage.cleanupOpen")}
-                  </button>
                 </div>
-              </div>
-            </Panel>
+              </Panel>
+            </div>
+            <BackupPanel backups={backups} reload={resource.reload} />
           </div>
         </>
       )}

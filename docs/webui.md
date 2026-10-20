@@ -57,6 +57,28 @@ Edit unlocked options; hot changes apply immediately, while restart-marked setti
 - "Model capability preflight" defaults to on. Disabling it affects new requests only, not metadata display, international image-run merging or existing security limits; see [model declarations](advanced.md#model-declarations-and-image-compatibility).
 - "Extra trusted management origins" (`admin_allowed_origins`) fixes sign-in behind HTTPS reverse proxies; see [Management Origin checks](advanced.md#management-origin--csrf-switch).
 
+## Updates
+
+The **Updates** page shows the current version, deployment type and repository URL, and lists the stable GitHub Releases; pick a version (`/dashboard/updates/v<version>`) to read its notes or open it on GitHub. The gateway checks at startup and every 6 hours, and the sidebar flags a newer release; **Check for updates** refreshes on demand, returning the cached result when clicked again within 60 seconds. Set `HTTPS_PROXY` for the process if GitHub is unreachable.
+
+Any release with an archive installs in one click: a newer version updates and an older one rolls back through the same steps. Release-archive installs, git checkouts and containers all qualify:
+
+1. Download the chosen `codebuddy2api-<version>.tar.gz` and verify it against `SHA256SUMS` and the asset digest reported by the GitHub API.
+2. Extract into `.update/` inside the install directory, checking layout and version and rejecting escaping paths. A rollback also confirms that the schema versions the target declares can read the current `control.sqlite3` and `logs.sqlite3`, and stops otherwise.
+3. Write a backup to `backups/` in the data directory (see [Data and backups](#data-and-backups)).
+4. When `requirements.txt` changed, install dependencies with `uv pip` (or `pip` without uv) using `--require-hashes`.
+5. Swap each top-level entry of the archive in with same-volume atomic renames, rolling every step back on failure; `.env`, the data directory, `.venv` and anything else outside the archive stay untouched.
+6. Shut down gracefully (in-flight requests get up to 30 seconds), then restart in place with the original command line, environment and working directory, keeping the PID.
+
+The page shows downloaded bytes, the current step and overall progress live; after the restart it polls until the new version answers, says so and reloads.
+
+- **Git checkouts:** tracked files follow the release and uncommitted edits go into the backup; untracked and ignored files inside replaced directories (such as `web/node_modules` or `docs/plans`) move into the new tree. HEAD does not move, so `git status` then shows the difference from the current commit.
+- **Containers:** program files are written to the container's writable layer. Directories the image layer cannot rename are copied out and removed instead; later updates rename atomically again.
+- **Download source:** pick GitHub directly, a built-in mirror (ghfast.top, gh-proxy.com, ghproxy.net and others) or a custom prefix, and run a speed test (each source downloads the first 512 KiB of the newest archive; a source returning anything but the archive counts as unavailable). Mirrors only serve downloads: releases are still listed from the GitHub API, a mirrored archive must match the API digest, and a release without a digest cannot install through a mirror. `CODEBUDDY2API_UPDATE_MIRROR` sets and locks the source.
+- Rolling back to a version without one-click updates means upgrading manually afterwards.
+
+API: `GET /admin/update`, `POST /admin/update/check`, `POST /admin/update/install` (`{"tag": "v<version>"}`), `POST /admin/update/mirror` (`{"mirror": "<prefix or empty>"}`), `POST /admin/update/mirrors/test`.
+
 ## Interface behavior
 
 The sidebar remembers its icon-only mode. Drawers lock background scrolling, close on backdrop clicks or Esc, and restore focus; saves, imports and deletions prevent accidental dismissal while pending. Details use labeled fields and status groups with folded raw diagnostics. Glass surfaces fall back to solid colors when transparency is reduced or blur is unsupported.
@@ -86,6 +108,8 @@ Auditing defaults to 30-day detail retention and a 256 MiB logical detail budget
 Mount the whole data directory on writable local storage, not just a single database file, and do not share it between gateway instances.
 
 Stop the gateway before copying the entire directory, including databases, WAL/SHM files, credentials and migration backups; do not back up only `.info`. Protect the control database: it contains the default key and management sessions.
+
+Before each one-click update the gateway writes `update-<old>-to-<new>-<UTC time>.tar.gz` to `backups/` in the data directory: `code/` holds the replaced program files and `data/` an online `control.sqlite3` snapshot plus the `*.info` credentials; `logs.sqlite3` is not included. Backups contain plaintext credentials and are created with mode 0600. Download or delete them under **Storage → Update backups**, which also lists the offline rollback steps; restoring the control database discards settings and state changed after the update.
 
 Legacy JSON is imported once; SQLite is authoritative afterward. Downgrades require a stopped gateway and matching state migration, never stale JSON overwriting new claims or revoked sessions. See [upgrade and state migration](deployment.md#upgrade-and-state-migration).
 

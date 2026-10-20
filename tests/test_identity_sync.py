@@ -425,11 +425,11 @@ class IdentitySyncTests(unittest.TestCase):
             thread.start.side_effect = barrier
             with patch("sys.argv", ["converter.py", "--auth-file", str(path), "--skip-check"]), \
                     patch.object(c.threading, "Thread", return_value=thread), \
-                    patch.object(c.uvicorn, "run", side_effect=barrier), \
+                    patch.object(c, "run_server", side_effect=barrier), \
                     patch("sys.stderr", new=io.StringIO()):
                 c.main()
-            # refresher, reconcile, housekeeper, lease heartbeat and the server itself.
-            self.assertEqual(len(observed), 5)
+            # refresher, reconcile, housekeeper, lease heartbeat, update check and the server itself.
+            self.assertEqual(len(observed), 6)
 
 
 if __name__ == "__main__":
